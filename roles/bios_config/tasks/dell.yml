@@ -19,7 +19,6 @@
       vars:
         bios_attrs: "{{ bios_config[ansible_system_vendor][ansible_product_name]['bios_attrs'] }}"
 
-    # All aboard the jank train, woo woo!
     # With the addition of HBA-less Dell servers, we need to remove the BIOS attr
     # 'IntegratedRaid' from our list of default keys and selectively add it for
     # servers that do have HBAs. If this key is present for HBA-less servers
