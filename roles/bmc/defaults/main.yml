@@ -1,0 +1,99 @@
+bmc_firmware:
+  Dell Inc.:
+    bmc_update_task: "dell.yml"
+    DSS7500:
+      bmc_expected_version: "2.82.82.82"
+      bmc_url: "{{ artifact_base_url }}/iDRAC-with-Lifecycle-Controller_Firmware_WGNHP_LN64_2.82.82.82_A00_01.BIN"
+      bmc_md5: "0067469cf831347f31786b6d56d767b2"
+    PowerEdge R630:
+      bmc_expected_version: "2.82.82.82"
+      bmc_url: "{{ artifact_base_url }}/iDRAC-with-Lifecycle-Controller_Firmware_WGNHP_LN64_2.82.82.82_A00_01.BIN"
+      bmc_md5: "0067469cf831347f31786b6d56d767b2"
+    PowerEdge R730:
+      bmc_expected_version: "2.82.82.82"
+      bmc_url: "{{ artifact_base_url }}/iDRAC-with-Lifecycle-Controller_Firmware_WGNHP_LN64_2.82.82.82_A00_01.BIN"
+      bmc_md5: "0067469cf831347f31786b6d56d767b2"
+    PowerEdge R730xd:
+      bmc_expected_version: "2.82.82.82"
+      bmc_url: "{{ artifact_base_url }}/iDRAC-with-Lifecycle-Controller_Firmware_WGNHP_LN64_2.82.82.82_A00_01.BIN"
+      bmc_md5: "0067469cf831347f31786b6d56d767b2"
+    PowerEdge R640:
+      bmc_expected_version: "6.10.00.00"
+      bmc_url: "{{ artifact_base_url }}/iDRAC-with-Lifecycle-Controller_Firmware_KMYV9_LN64_6.10.00.00_A00.BIN"
+      bmc_md5: "7da184b1f30cd3abf8b6817fd6c188ef"
+    PowerEdge R740xd:
+      bmc_expected_version: "6.10.00.00"
+      bmc_url: "{{ artifact_base_url }}/iDRAC-with-Lifecycle-Controller_Firmware_KMYV9_LN64_6.10.00.00_A00.BIN"
+      bmc_md5: "7da184b1f30cd3abf8b6817fd6c188ef"
+    PowerEdge R7415:
+      bmc_expected_version: "6.10.00.00"
+      bmc_url: "{{ artifact_base_url }}/iDRAC-with-Lifecycle-Controller_Firmware_KMYV9_LN64_6.10.00.00_A00.BIN"
+      bmc_md5: "7da184b1f30cd3abf8b6817fd6c188ef"
+    PowerEdge R6515:
+      bmc_expected_version: "6.10.00.00"
+      bmc_url: "{{ artifact_base_url }}/iDRAC-with-Lifecycle-Controller_Firmware_KMYV9_LN64_6.10.00.00_A00.BIN"
+      bmc_md5: "7da184b1f30cd3abf8b6817fd6c188ef"
+    PowerEdge R6525:
+      bmc_expected_version: "6.10.00.00"
+      bmc_url: "{{ artifact_base_url }}/iDRAC-with-Lifecycle-Controller_Firmware_KMYV9_LN64_6.10.00.00_A00.BIN"
+      bmc_md5: "7da184b1f30cd3abf8b6817fd6c188ef"
+    PowerEdge R650xs:
+      bmc_expected_version: "6.10.00.00"
+      bmc_url: "{{ artifact_base_url }}/iDRAC-with-Lifecycle-Controller_Firmware_KMYV9_LN64_6.10.00.00_A00.BIN"
+      bmc_md5: "7da184b1f30cd3abf8b6817fd6c188ef"
+  HPE:
+    bmc_update_task: "hp.yml"
+    ProLiant DL325 Gen10:
+      bmc_expected_version: "2.72"
+      bmc_url: "{{ artifact_base_url }}/firmware-ilo5-2.72-1.1.x86_64.rpm"
+      bmc_md5: "00a706d512508a69cb2fb89b010cec8b"
+    ProLiant DL345 Gen10 Plus:
+      bmc_expected_version: "2.72"
+      bmc_url: "{{ artifact_base_url }}/firmware-ilo5-2.72-1.1.x86_64.rpm"
+      bmc_md5: "00a706d512508a69cb2fb89b010cec8b"
+    ProLiant DL360 Gen10:
+      bmc_expected_version: "2.72"
+      bmc_url: "{{ artifact_base_url }}/firmware-ilo5-2.72-1.1.x86_64.rpm"
+      bmc_md5: "00a706d512508a69cb2fb89b010cec8b"
+    ProLiant DL380 Gen10:
+      bmc_expected_version: "2.72"
+      bmc_url: "{{ artifact_base_url }}/firmware-ilo5-2.72-1.1.x86_64.rpm"
+      bmc_md5: "00a706d512508a69cb2fb89b010cec8b"
+    ProLiant XL420 Gen10:
+      bmc_expected_version: "2.72"
+      bmc_url: "{{ artifact_base_url }}/firmware-ilo5-2.72-1.1.x86_64.rpm"
+      bmc_md5: "00a706d512508a69cb2fb89b010cec8b"
+    ProLiant DL360 Gen10 Plus:
+      bmc_expected_version: "2.72"
+      bmc_url: "{{ artifact_base_url }}/firmware-ilo5-2.72-1.1.x86_64.rpm"
+      bmc_md5: "00a706d512508a69cb2fb89b010cec8b"
+    ProLiant DL325 Gen10 Plus v2:
+      bmc_expected_version: "2.72"
+      bmc_url: "{{ artifact_base_url }}/firmware-ilo5-2.72-1.1.x86_64.rpm"
+      bmc_md5: "00a706d512508a69cb2fb89b010cec8b"
+  Supermicro:
+    bmc_update_task: "supermicro.yml"
+    AS -4124GS-TNR:
+      bmc_expected_version: "01.01.01"
+      bmc_url: "{{ artifact_base_url }}/BMC_H12AST2500-ROT-2201MS_20211214_01.01.01sp.bin"
+      bmc_md5: "41211d634988f6a3ea3560056b89c53c"
+      sum_tool_url: "{{ artifact_base_url }}/sum_2.6.0"
+      sum_tool_md5: "ca2091492174f62015d627896c2ab39d"
+    AS -1114S-WN10RT:
+      bmc_expected_version: "01.01.04"
+      bmc_url: "{{ artifact_base_url }}/BMC_H12AST2500-ROT-2201MS_20220321_01.01.04sp.bin"
+      bmc_md5: "bb85e82a120c799ccd9e3828dd0f1fdf"
+      sum_tool_url: "{{ artifact_base_url }}/sum_2.6.0"
+      sum_tool_md5: "ca2091492174f62015d627896c2ab39d"
+    SYS-120C-TN10R:
+      bmc_expected_version: "01.01.31"
+      bmc_url: "{{ artifact_base_url }}/BMC_X12AST2600-ROT-5201MS_20220907_01.01.31_STDsp.bin"
+      bmc_md5: "5b6dc1667f50f792e5999c84ef6657bd"
+      sum_tool_url: "{{ artifact_base_url }}/sum_2.6.0"
+      sum_tool_md5: "ca2091492174f62015d627896c2ab39d"
+    AS -1114CS-TNR:
+      bmc_expected_version: "01.01.07"
+      bmc_url: "{{ artifact_base_url }}/BMC_H12AST2600-ROT-E201MS_20220125_01.01.07_STDsp.bin"
+      bmc_md5: "59836f8f242f23f2820d57ef8a6926db"
+      sum_tool_url: "{{ artifact_base_url }}/sum_2.6.0"
+      sum_tool_md5: "ca2091492174f62015d627896c2ab39d"

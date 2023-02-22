@@ -1,0 +1,79 @@
+---
+- name: Ensure ipmi kmods are present
+  service:
+    name: openipmi
+    state: started
+  become: yes
+
+- name: Ensure ilorest is present
+  package:
+    name: ilorest
+    state: present
+  become: yes
+  when:
+    - ansible_system_vendor == "HPE"
+
+# Typically the same set of commands/return values are consistent for all
+# platforms from a vendor. However, some chassis (or chassis generations) may
+# have different commands/return values. Override "vendor specific" data with
+# "chassis" specific data when appropriate.
+- name: Set vendor specific RF HI data
+  set_fact:
+    status_command: "{{ bmc_host_interface_data['status_command'] }}"
+    enable_command: "{{ bmc_host_interface_data['enable_command'] }}"
+    regex_query: "{{ bmc_host_interface_data['regex_query'] }}"
+    enabled_status: "{{ bmc_host_interface_data['enabled_status'] }}"
+  vars:
+    bmc_host_interface_data: "{{ bmc_config[ansible_system_vendor]['bmc_host_interface_data'] }}"
+
+- name: Set chassis specific RF HI data if available
+  set_fact:
+    status_command: "{{ bmc_host_interface_data['status_command'] }}"
+    enable_command: "{{ bmc_host_interface_data['enable_command'] }}"
+    regex_query: "{{ bmc_host_interface_data['regex_query'] }}"
+    enabled_status: "{{ bmc_host_interface_data['enabled_status'] }}"
+  vars:
+    bmc_host_interface_data: "{{ bmc_config[ansible_system_vendor][ansible_product_name]['bmc_host_interface_data'] }}"
+  when:
+  - bmc_config[ansible_system_vendor] is defined
+  - bmc_config[ansible_system_vendor][ansible_product_name]['bmc_host_interface_data'] is defined
+
+- name: Capture current RF HI Status
+  command: "{{ status_command }}"
+  register: host_interface_status_command_output
+  become: yes
+  changed_when: no
+
+- name: Enable RF HI via in-band
+  command: "{{ enable_command }}"
+  become: yes
+  register: host_interface_enable_command_output
+  vars:
+    expected_host_interface_status: "{{ enabled_status }}"
+    current_host_interface_status: "{{ host_interface_status_command_output.stdout | regex_findall(regex_query, '\\1')
+                                                                                   | list
+                                                                                   | first }}"
+  when:
+    - current_host_interface_status != expected_host_interface_status
+
+- name: Restart iLO
+  command: ilorest iloreset
+  become: yes
+  when:
+    - host_interface_enable_command_output is changed
+    - ansible_system_vendor == "HPE"
+  register: iloreset_reboot_status
+
+# Using wait_for so that all hosts are evaluated against the conditional(s)
+- name: Pause while RF HI starts
+  wait_for:
+    timeout: 10
+  when:
+    - host_interface_enable_command_output is changed
+
+- name: Pause even longer for HPE iLO to restart
+  wait_for:
+    timeout: 120
+  when:
+    - iloreset_reboot_status is changed
+    - ansible_system_vendor == "HPE"

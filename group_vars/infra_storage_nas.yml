@@ -1,0 +1,7 @@
+---
+hba_firmware:
+  dell_perc:
+    PERC H730P Mini:
+      boot_drive: '1'
+      perc_personality: 'RAID-Mode'
+

@@ -1,0 +1,133 @@
+---
+- block:
+  # Mildly horrible method to avoid the inconsistent prepend of "v" on some HP version numbers
+  # so we can keep everything bare numbers in the defaults file
+  # Sample output: "Version": "U46 v1.54 (01/05/2999)"
+  # Version: U46
+  # Revision: 1.54
+  - name: Set BIOS Version
+    set_fact:
+      ansible_bios_version: "{{ (redfish_fw_inventory['redfish_facts']['firmware']['entries'] | selectattr('Name', '==', 'System ROM')
+                                                                                              | list
+                                                                                              | first)['Version'].split(' ')[1][1:] }}"
+
+  # TODO: Dry this out. HPE only builds RPMs and we do similar things for
+  # hpe bios, and bmc. We should just turn the rpm extraction into a playbook
+  # and include it when needed
+  - name: Force reboot handlers before Intel ME actions
+    meta: flush_handlers
+
+  - name: Check for compatiable BIOS
+    fail:
+      msg: The BIOS is too low for any ME updates.
+    when: intel_me_minimum_bios_version is version(ansible_bios_version, '>')
+    vars:
+      intel_me_minimum_bios_version: "{{ intel_me_firmware[ansible_system_vendor][ansible_product_name]['intel_me_minimum_bios_version'] }}"
+
+  # Note: If we start tracking other ME components we need to set them as facts here
+  - name: Set Installed Intel ME Subsystem version facts
+    set_fact:
+      intel_me_ie_firmware_version: "{{ (redfish_fw_inventory['redfish_facts']['firmware']['entries'] | selectattr('Name', '==', 'Innovation Engine (IE) Firmware')
+                                                                        | list
+                                                                        | first)['Version'] }}"
+      intel_me_sps_firmware_version: "{{ (redfish_fw_inventory['redfish_facts']['firmware']['entries'] | selectattr('Name', '==', 'Server Platform Services (SPS) Firmware')
+                                                                         | list
+                                                                         | first)['Version'] }}"
+
+- block:
+  # TODO: Implement this using with_items. Essentially we'd make a data structure
+  # containing these directory names, and we'd call it later in the play
+  - name: Derive HPE ME subsystem firmware directory names
+    set_fact:
+      hp_intel_me_ie_package_dir: "{{ intel_ie['url'] | urlsplit('path')
+                                                      | basename
+                                                      | regex_replace('.x86_64.rpm|.i386.rpm') }}"
+      hp_intel_me_ie_package_arch: "{{ intel_ie['url'] | urlsplit('path')
+                                                       | basename
+                                                       | regex_replace('(.+?)(x86_64|i386)(\\.rpm)$', '\\2') }}"
+      hp_intel_me_sps_package_dir: "{{ intel_sps['url'] | urlsplit('path')
+                                                        | basename
+                                                        | regex_replace('.x86_64.rpm|.i386.rpm') }}"
+      hp_intel_me_sps_package_arch: "{{ intel_sps['url'] | urlsplit('path')
+                                                         | basename
+                                                         | regex_replace('(.+?)(x86_64|i386)(\\.rpm)$', '\\2') }}"
+
+  # We could probably optimize this, but we'll extract all the ME updates
+  # no matter what and only install them if needed.
+  - name: Install HP Intel ME subsystem update package deps
+    package:
+      name: "{{ item }}"
+    with_items:
+      - rpm2cpio
+
+  - name: Create a temp HPE Intel ME upgrade directory
+    tempfile:
+      state: directory
+      suffix: -intel_me
+    register: intel_me_dir
+
+  - name: Make directories for each ME subsystem package
+    file:
+      path: "{{ intel_me_dir.path }}/{{ item.description }}"
+      state: directory
+      mode: "0755"
+    with_items:
+      - "{{ intel_ie }}"
+      - "{{ intel_sps }}"
+
+  - name: Grab HPE Intel ME subsystem packages
+    get_url:
+      url: "{{ item.url }}"
+      dest: "{{ intel_me_dir.path }}/{{ item.description }}/{{ item.description }}.rpm"
+      mode: "0755"
+      timeout: "240"
+      checksum: "md5:{{ item.md5 }}"
+    register: get_url_status
+    until: get_url_status is succeeded
+    retries: "{{ artifact_retries }}"
+    delay: "{{ artifact_delay }}"
+    with_items:
+      - "{{ intel_ie }}"
+      - "{{ intel_sps }}"
+
+  # Unfortunately HP updates are packaged...poorly
+  - name: Extract HPE Intel ME subsystem RPM packages
+    shell: rpm2cpio "{{ item.description }}".rpm | cpio -idmv
+    args:
+      chdir: "{{ intel_me_dir.path }}/{{ item.description }}"
+    with_items:
+      - "{{ intel_ie }}"
+      - "{{ intel_sps }}"
+
+  # Note: We need and upgrade/downgrade step for each subsystem
+  # TODO: Simplify this to use with_items and use those items within the conditional
+  # we can likely use a key:value scheme to make our firmware comparision list
+  - name: Upgrade/downgrade HPE Intel ME IE
+    command: ./hpsetup -s -g
+    args:
+      chdir: "{{ intel_me_dir.path }}/{{ intel_ie['description'] }}/usr/lib/{{ hp_intel_me_ie_package_arch }}-linux-gnu/{{ hp_intel_me_ie_package_dir }}"
+    register: intel_me_ie_upg
+    failed_when: intel_me_ie_upg.rc != 1 # 1 == Upgrade succeeded
+    notify: "reboot server"
+    when:
+      - intel_me_ie_firmware_version is version(intel_me_ie_expected_version, '!=')
+
+  - name: Upgrade/downgrade HPE Intel ME SPS
+    command: ./hpsetup -s -g
+    args:
+      chdir: "{{ intel_me_dir.path }}/{{ intel_sps['description'] }}/usr/lib/{{ hp_intel_me_sps_package_arch }}-linux-gnu/{{ hp_intel_me_sps_package_dir }}"
+    register: intel_me_sps_upg
+    failed_when: intel_me_sps_upg.rc != 1 # 1 == Upgrade succeeded
+    notify: "reboot server"
+    when:
+      - intel_me_sps_firmware_version is version(intel_me_sps_expected_version, '!=')
+
+  - name: Clean up HPE Intel ME temp directory
+    file:
+      path: "{{ intel_me_dir.path }}"
+      state: absent
+  become: yes
+  when:
+    - intel_me_ie_firmware_version is version(intel_me_ie_expected_version, '!=') or
+      intel_me_sps_firmware_version is version(intel_me_sps_expected_version, '!=')
+    - not ansible_check_mode

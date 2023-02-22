@@ -1,0 +1,166 @@
+---
+- block:
+    # We will use "ipmitool channel getaccess" for this task instead of using
+    # "ipmitool user list". Using "channel getaccess" will provide similar
+    # information, but will also provide "Enable Status".
+    - name: Gather IPMI user settings
+      command: "ipmitool channel getaccess {{ ipmi_channel }}"
+      changed_when: ipmi_user_info.rc != 0
+      register: ipmi_user_info
+      until: ipmi_user_info is successful
+
+    # To account for systems that may have multiple administrator level accounts, regardless of username
+    - name: Extract enabled IPMI admin privilege accounts
+      set_fact:
+        ipmi_admins: "{{ ipmi_user_info.stdout | regex_findall(regexp, '\\1') }}"
+      vars:
+        regexp: '^User ID\s+:\s(\w+)\nUser Name\s+:\s(\w+)\nFixed Name\s+:\s(\w+)(?:\n.+)+(?=ADMINISTRATOR\n.+enabled)'
+
+    # If node comes with a factory set admin account that is of type "Fixed Name"
+    # we should use it since we can't delete it!
+    # We are capturing [ 0 = UserID, 1 = User Name, 2 = FixedID ]
+    - name: Capture existing manufacturer IPMI admin account
+      set_fact:
+        existing_id: "{{ existing_admin_id }}"
+      loop: "{{ ipmi_admins }}"
+      loop_control:
+        loop_var: existing_admin_id
+      when:
+        - ipmi_admins is defined
+        - ipmi_admins | length > 0
+        - existing_admin_id[2] == "Yes"
+
+    - name: Rename the factory account to match standard
+      command: "ipmitool user set name {{ existing_id[0] }} {{ bmc_username }}"
+      when:
+        - existing_id is defined
+        - existing_id[1] != bmc_username
+
+    # If the node has already been set up at DO, we can reuse the existing admin account
+    - name: Capture existing DO IPMI admin account
+      set_fact:
+        existing_id: "{{ existing_admin_id }}"
+      loop: "{{ ipmi_admins }}"
+      loop_control:
+        loop_var: existing_admin_id
+      when:
+        - ipmi_admins is defined
+        - ipmi_admins | length > 0
+        - existing_id is undefined
+        - existing_admin_id[1] == bmc_username
+
+    # Disable and rename so we don't end up with duplicate name accounts - thanks SMC
+    - name: Disable extraneous IPMI admin privilege accounts
+      shell: "ipmitool user disable {{ disable_id[0] }} && ipmitool user set name {{ disable_id[0] }} Unused"
+      loop: "{{ ipmi_admins }}"
+      loop_control:
+        loop_var: disable_id
+      when:
+        - ipmi_admins is defined
+        - ipmi_admins | length > 0
+        - existing_id is defined and disable_id[0] != existing_id[0]
+
+    # Check for password drift and update if needed
+    - name: Check existing IPMI admin password
+      command: "ipmitool user test {{ existing_id[0] }} 20 {{ bmc_password }}"
+      register: ipmi_password_test
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when: existing_id is defined
+
+    # Explicitly set the password to the IPMI 2.0 20 char storage even though we may
+    # not be using that long of a password. Some nodes default to the shorter length
+    # which breaks the password test in Seaworthy. See JIRA-1234 for details.
+    # This must match the IPMI password check above and in Seaworthy.
+    - name: Update existing IPMI admin password
+      command: "ipmitool user set password {{ existing_id[0] }} {{ bmc_password }} 20"
+      register: ipmi_password_change
+      failed_when: "'failed' in ipmi_password_change.stderr"
+      no_log: true
+      when:
+        - existing_id is defined
+        - ipmi_password_test.rc != 0
+
+    - name: Add NEW admin user
+      block:
+        - name: Set NEW username
+          command: "ipmitool user set name {{ ipmi_admin_user_id }} {{ bmc_username }}"
+        - name: Set NEW admin user password
+          command: "ipmitool user set password {{ ipmi_admin_user_id }} {{ bmc_password }}"
+          no_log: true
+        - name: Set NEW admin privilege level
+          command: "ipmitool channel setaccess {{ ipmi_channel }} {{ ipmi_admin_user_id }} ipmi=on privilege=4"
+        - name: Enable NEW admin account
+          command: "ipmitool user enable {{ ipmi_admin_user_id }}"
+      when: existing_id is undefined
+
+    # Add Read-Only 'User' privilege level account for non-administrative tasks
+    # Uses existing IPMI channel access output from Admin account task above
+    - name: Extract enabled IPMI RO User privilege accounts
+      set_fact:
+        ipmi_ro_users: "{{ ipmi_user_info.stdout | regex_findall(ro_regexp, '\\1') }}"
+      vars:
+        ro_regexp: '^User ID\s+:\s(\w+)\nUser Name\s+:\s(\w+)(?:\n.+)+(?=USER\n.+enabled)'
+
+    # If the node has already been set up, we can reuse the existing user account
+    - name: Capture existing IPMI RO user account
+      set_fact:
+        existing_ro_id: "{{ existing_ro_user_id[0] }}"
+      loop: "{{ ipmi_ro_users }}"
+      loop_control:
+        loop_var: existing_ro_user_id
+      when:
+        - ipmi_ro_users is defined
+        - ipmi_ro_users | length > 0
+        - existing_ro_user_id[1] == bmc_ro_username
+
+    # Unlike the admins accounts we don't disable other 'User' privilege accounts as we
+    # may have multiple utility accounts in the future.
+
+    # Check for password drift and update if needed
+    - name: Check existing IPMI RO user password
+      command: "ipmitool user test {{ existing_ro_id }} 20 {{ bmc_ro_password }}"
+      register: ipmi_ro_password_test
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when: existing_ro_id is defined
+
+    # If the password doesn't match the expected, update it. See the Admin task above for
+    # details around the password field and corresponding Seaworthy checks
+    - name: Update existing IPMI RO user password
+      command: "ipmitool user set password {{ existing_ro_id }} {{ bmc_ro_password }} 20"
+      register: ipmi_ro_password_change
+      failed_when: "'fail' in ipmi_ro_password_change.stderr"
+      no_log: true
+      when:
+        - existing_ro_id is defined
+        - ipmi_ro_password_test.rc != 0
+
+    - name: Add NEW Read-Only user
+      block:
+        - name: Set NEW RO username
+          command: "ipmitool user set name {{ ipmi_ro_user_id }} {{ bmc_ro_username }}"
+        - name: Set NEW RO user password
+          command: "ipmitool user set password {{ ipmi_ro_user_id }} {{ bmc_ro_password }} 20"
+          no_log: true
+        - name: Set NEW RO user privilege level (2 = USER)
+          command: "ipmitool channel setaccess {{ ipmi_channel }} {{ ipmi_ro_user_id }} ipmi=on privilege=2"
+        - name: Enable NEW RO user account
+          command: "ipmitool user enable {{ ipmi_ro_user_id }}"
+      when: existing_ro_id is undefined
+
+    - name: "Enable Redfish for Read-Only user"
+      community.general.redfish_command:
+        category: Accounts
+        command: UpdateUserRole
+        baseuri: "{{ bmc_address }}"
+        username: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        account_username: "{{ bmc_ro_username }}"
+        roleid: "{{ bmc_ro_rf_roleid }}"
+        timeout: "{{ default_uri_timeout }}"
+      retries: "{{ default_uri_retries }}"
+
+  become: yes

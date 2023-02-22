@@ -1,0 +1,42 @@
+---
+# To prepare for all further FWU tasks we need the baseline of versions
+# as close to BMC updates as possible
+# Due to JIRA-1234 some Dell R640's with Intel XL710 nics break the
+# upstream inventory module so we are forced to do terrible things to not
+# Collect firmware versions for all compatible components reporting in
+- name: Collect Firmware Inventory
+  block:
+    - name: Collect Firmware Inventory
+      community.general.redfish_info:
+        category: Update
+        command: GetFirmwareInventory
+        baseuri: "{{ bmc_address }}"
+        username: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        timeout: "{{ default_uri_timeout }}"
+      retries: "{{ default_uri_retries }}"
+      delay: "{{ default_uri_delay }}"
+      register: redfish_fw_inventory
+      until:
+        - redfish_fw_inventory.failed == false
+        - redfish_fw_inventory.redfish_facts is defined
+        - redfish_fw_inventory.redfish_facts.firmware is defined
+        - redfish_fw_inventory.redfish_facts.firmware.ret == True
+  rescue:
+    - name: Dell R640/XL710 NIC bug
+      ansible.builtin.fail:
+        msg: "Detected Dell R640/XL710 NIC condition! Please upgrade with CAP-1168 process"
+      when:
+        - redfish_fw_inventory.redfish_facts is defined
+        - redfish_fw_inventory.redfish_facts.firmware is defined
+        - redfish_fw_inventory.redfish_facts.firmware.msg is defined
+        - "'contain control character' in redfish_fw_inventory.redfish_facts.firmware.msg"
+
+    - name: Fail if BMC Internal Error
+      ansible.builtin.fail:
+        msg: "BMC returned: {{ redfish_fw_inventory.redfish_facts.firmware.msg }}, human intervention required"
+      when:
+        - redfish_fw_inventory.redfish_facts is defined
+        - redfish_fw_inventory.redfish_facts.firmware is defined
+        - redfish_fw_inventory.redfish_facts.firmware.msg is defined
+        - "'Internal Server Error' in redfish_fw_inventory.redfish_facts.firmware.msg"

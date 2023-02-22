@@ -1,0 +1,20 @@
+---
+- block:
+  - name: Set BMC expected firmware version facts
+    set_fact:
+      bmc_url: "{{ bmc_firmware[ansible_system_vendor][ansible_product_name].bmc_url }}"
+      bmc_md5: "{{ bmc_firmware[ansible_system_vendor][ansible_product_name].bmc_md5 }}"
+      expected_bmc_version: "{{ bmc_firmware[ansible_system_vendor][ansible_product_name]['bmc_expected_version'] }}"
+
+  - name: Include BMC update task
+    include_tasks: "{{ bmc_firmware[ansible_system_vendor]['bmc_update_task'] }}"
+  when:
+    - ansible_system_vendor in bmc_firmware
+    - ansible_product_name in bmc_firmware[ansible_system_vendor]
+
+- name: BMC Firmware Version Check
+  set_fact:
+    fw_check: "{{ fw_check | default([]) }} + ['BMC (Actual/Expected): {{ ansible_bmc_version }}/{{ expected_bmc_version }}']"
+  when:
+    - ansible_bmc_version is defined
+    - ansible_check_mode

@@ -1,0 +1,183 @@
+---
+- block:
+  # Intel FW blobs are per NIC generation, not per model. One package will
+  # update all NICs in a server:
+  # - i40e = fortville = XL710/X710
+  # - ice = columbiaville = E810
+  - name: Generate list of Intel NICs that require FW changes
+    set_fact:
+      intel_nics_to_update: "{{ intel_nics_to_update | default([]) + [item] }}"
+    with_items: "{{ intel_nics }}"
+    when:
+      - item.firmware_version is version(nic_firmware_data['intel'][item.driver]['expected_firmware_version'], 'ne')
+    vars:
+      intel_nics: "{{ interfaces | selectattr('pci_id', 'in', nic_firmware_data.intel.pci_ids)
+                                 | selectattr('pci_slot', 'search', '0$') }}"
+
+  - block:
+    # The following checks are related to Intel "downgrade package". Intel NVM
+    # updates have specific downgrade packages that are unique per source FW
+    # and target FW version. i.e. FW 7.20 -> 7.00 requires a different
+    # downgrade package than FW 7.10 -> 7.00.
+
+    # There exists an edge case when multiple Intel NICs of the same 'family' are
+    # present but have different FW versions that may require separate 'upgrade'
+    # and/or 'downgrade' FW packages. Iterate through list of Intel NIC family
+    # types, compare against detected NIC FW versions and alert a human if
+    # multiple versions are detected.
+    - name: Check for heterogeneous Intel FW versions per NIC family
+      assert:
+        that:
+          - unique_fw_versions | length < 2
+        fail_msg: "Multiple unique FW versions detected for {{ nic_family }} NIC types!"
+        success_msg: "Homogeneous FW versions detected for {{ nic_family }} NIC types."
+        quiet: yes
+      with_items: "{{ nic_firmware_data['intel'] }}"
+      loop_control:
+        loop_var: nic_family
+      vars:
+        unique_fw_versions: "{{ intel_nics_to_update | selectattr('driver', 'equalto', nic_family)
+                                                     | map(attribute='firmware_version')
+                                                     | list
+                                                     | unique }}"
+      when:
+        - nic_family != 'pci_ids'
+
+    # Intel FW blobs have version specific "downgrade packages". Check for the
+    # following:
+    # - FW downgrade requested
+    # - FW downgrade package available
+    - name: Check for FW downgrade package availability
+      assert:
+        that:
+          - expected_fw_version in nic_firmware_data['intel'][item.driver]['downgrade_firmware']
+          - current_fw_version in nic_firmware_data['intel'][item.driver]['downgrade_firmware'][expected_fw_version]
+        fail_msg: "No downgrade package available from {{ current_fw_version }} -> {{ expected_fw_version }}!"
+        success_msg: "Downgrade package available from {{ current_fw_version }} -> {{ expected_fw_version }}"
+        quiet: yes
+      with_items: "{{ intel_nics_to_update }}"
+      when: current_fw_version is version(expected_fw_version, 'gt')
+      vars:
+        current_fw_version: "{{ item.firmware_version }}"
+        expected_fw_version: "{{ nic_firmware_data['intel'][item.driver]['expected_firmware_version'] }}"
+
+    - name: Override firmware URL and MD5 with downgrade packages
+      set_fact:
+        nic_firmware_data: "{{ nic_firmware_data | combine({'intel': {item.driver: {'firmware_url': new_firmware_url,
+                                                                                    'firmware_md5': new_firmware_md5}}}, recursive=True) }}"
+      with_items: "{{ intel_nics_to_update }}"
+      when: current_fw_version is version(expected_fw_version, 'gt')
+      vars:
+        current_fw_version: "{{ item.firmware_version }}"
+        expected_fw_version: "{{ nic_firmware_data['intel'][item.driver]['expected_firmware_version'] }}"
+        new_firmware_url: "{{ nic_firmware_data['intel'][item.driver]['downgrade_firmware'][expected_fw_version][current_fw_version]['firmware_url'] }}"
+        new_firmware_md5: "{{ nic_firmware_data['intel'][item.driver]['downgrade_firmware'][expected_fw_version][current_fw_version]['firmware_md5'] }}"
+
+    - name: Create temp directory for Intel FW downloads
+      tempfile:
+        state: directory
+        suffix: -intel
+      register: intel_temp_dir
+
+    # Only one FW update file should be downloaded and applied per NIC family
+    # type. Iterate over NIC family types vs all NICs to avoid duplicate
+    # downloads and FW updates.
+    - name: Download Intel FW update package
+      get_url:
+        url: "{{ intel_fw_url }}"
+        dest: "{{ intel_temp_dir.path }}/{{ intel_fw_filename }}"
+        mode: "0644"
+        checksum: "md5:{{ intel_fw_md5 }}"
+      register: get_url_status
+      until: get_url_status is succeeded
+      retries: "{{ artifact_retries }}"
+      delay: "{{ artifact_delay }}"
+      with_items: "{{ nic_firmware_data['intel'] }}"
+      when:
+        - nic_family != 'pci_ids'
+        - nic_family in intel_nics_to_update | map(attribute='driver') | list
+      loop_control:
+        loop_var: nic_family
+      vars:
+        intel_fw_md5: "{{ nic_firmware_data['intel'][nic_family]['firmware_md5'] }}"
+        intel_fw_url: "{{ nic_firmware_data['intel'][nic_family]['firmware_url'] }}"
+        intel_fw_filename: "{{ nic_firmware_data['intel'][nic_family]['firmware_url'] | basename }}"
+
+    # Iterate over successfully downloaded FW files instead of re-parsing
+    # the nic_firmware_data dictionary
+    - name: Extract Intel FW
+      unarchive:
+        src: "{{ intel_fw_file }}"
+        dest: "{{ intel_temp_dir.path }}"
+        remote_src: yes
+        list_files: yes
+      with_items: "{{ intel_fw_files }}"
+      loop_control:
+        loop_var: intel_fw_file
+      register: intel_fw_contents
+      vars:
+        intel_fw_files: "{{ get_url_status.results | selectattr('dest', 'defined')
+                                                   | map(attribute='dest')
+                                                   | list }}"
+
+    # Dell provided DO with snowflake XL710 NICs that didn't have etrack IDs
+    # in NVM update files prior to 7.20. To address that we'll manually add the
+    # following etrack IDs to nvmeupdate.cfg. Note that this line is absent in
+    # E810 nvmeupdate.cfg files.
+    # - 8000537C
+    # - 80005384
+    - name: Patch Intel NVM config file for snowflake Dell NICs
+      lineinfile:
+        dest: "{{ intel_temp_dir.path }}/{{ intel_fw_config_file }}"
+        line: "REPLACES: 8000196C 80001FA6 80002536 80002925 800035D8 80003CFD 80004CC9 8000537C 80005384"
+        regexp: "^REPLACES: 8000196C"
+        backrefs: yes
+      when:
+        - nic_firmware_data['intel']['i40e']['expected_firmware_version'] is version('7.20', 'lt')
+      with_items: "{{ intel_fw_config_files }}"
+      loop_control:
+        loop_var: intel_fw_config_file
+      vars:
+        intel_fw_config_files: "{{ intel_fw_contents.results | selectattr('files', 'defined')
+                                                             | map(attribute='files')
+                                                             | flatten
+                                                             | select('match', '.+nvmupdate.cfg$') }}"
+
+    # Intel NVM packages are inconsistent with structure and naming
+    # conventions. Searching the FW directory for the nvmupdate64e binary is
+    # required in order to chdir + execute the binary without hardcoding paths.
+    - name: Upgrade/downgrade Intel NIC FW
+      command: ./nvmupdate64e -u -l -c ./nvmupdate.cfg
+      args:
+        chdir: "{{ intel_temp_dir.path }}/{{ intel_fw_dir }}"
+      notify: "reboot server"
+      with_items: "{{ intel_fw_dirs }}"
+      loop_control:
+        loop_var: intel_fw_dir
+      vars:
+        intel_fw_dirs: "{{ intel_fw_contents.results | selectattr('files', 'defined')
+                                                     | map(attribute='files')
+                                                     | flatten
+                                                     | select('match', '.+nvmupdate64e$')
+                                                     | map('dirname') }}"
+    - name: Clean up Intel NIC FW dir
+      file:
+        path: "{{ intel_temp_dir.path }}"
+        state: absent
+
+    when:
+      - intel_nics_to_update | default([]) | length > 0
+      - not ansible_check_mode
+
+  become: yes
+
+- name: Intel NIC Firmware Check
+  set_fact:
+    fw_check: "{{ fw_check | default([]) }} + ['Intel NIC (Actual/Expected): {{ item.firmware_version }}/{{ nic_firmware_data['intel'][item.driver]['expected_firmware_version'] }}']"
+  with_items:
+    - "{{ intel_nics }}"
+  vars:
+    intel_nics: "{{ interfaces | selectattr('pci_id', 'in', nic_firmware_data.intel.pci_ids)
+                               | selectattr('pci_slot', 'search', '0$') }}"
+  when:
+    - ansible_check_mode

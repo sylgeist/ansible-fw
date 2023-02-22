@@ -1,0 +1,79 @@
+---
+- block:
+    # For astute readers, we have nuked all of the Redfish / racadm bits and
+    # replaced everything with ssh / dmidecode. The original stuff "was fine"
+    # but it was definitely a bunch of spaghetti to handle edge cases like
+    # missing iDRAC hw inventory or garbage solarflare NICs. In the end
+    # dmidecode "works for now"
+
+    - name: Capture PCI DMI info
+      command: dmidecode -t 9
+      register: dmidecode_type_9_out
+      changed_when: False
+      ignore_errors: True
+
+    # Identify the PCI ID of the "primary" interface. i.e. whatever we ssh-ed
+    # to to get ansible to work.
+    - name: Identify PXE (primary interface) PCI ID
+      set_fact:
+        primary_interface: "{{ ansible_default_ipv4['interface'] }}"
+      vars:
+      when: ansible_facts[ansible_default_ipv4['interface']]['pciid'] is defined
+
+    # We assume the ansible default ipv4 interface is the desired PXE
+    # interface. However, in certain circumstances, the "default" interface
+    # may be a bond or bridge. In that case, fall back to assuming it's eth0.
+    # (Yes this is super brittle. PRs welcome.)
+    - name: Fallback to eth0 PCI ID for PXE interface
+      set_fact:
+        primary_interface: "eth0"
+      when: primary_interface is undefined
+
+    - name: Set dell_pci_nic based on derived DMI information
+      set_fact:
+        dell_pci_nic: "NIC.Slot.{{ dmi_type_9_pcie_slot }}-1"
+      vars:
+        pxe_pciid: "{{ ansible_facts[primary_interface]['pciid'] | string }}"
+        regex_query: "{{'\\tDesignation: PCIe Slot ([0-9]+)(?:.*\n){7,10}\\tBus Address: ' + pxe_pciid }}"
+        dmi_type_9_pcie_slot:
+          "{{ dmidecode_type_9_out.stdout | regex_search(regex_query, '\\1')
+          | first }}"
+    # Oh, hi there! Remember JIRA-1234? If not, quick recap:
+    # Dell shipped us a batch of ~700-ish NICs that are not generic / channel
+    # components. They are a weird "hybrid" NIC that contains Dell VPD and
+    # Mellanox VPD. As a result, Dell iDRACs do some weird stuff when they
+    # encounter these NICs. As an example, a generic Mellanox NIC will be
+    # identified by the iDRAC as "NIC.Slot.2-1", however a "hybrid" NIC is
+    # identified as "NIC.Slot.2-1-1" (note the extra dash). There isn't a good
+    # way to identify these NICs without looking at the PCI VPD and poking
+    # around for the presence of non-Mellanox info. Unfortunately I suspect
+    # this issue will haunt us forever and is the new "8122 jank".
+    # Unfortunately "Dell/Mellanox hybrid VPD jank" doesn't quite roll off the
+    # tongue as well. Suggestions welcome.
+
+    # We can use the presence of a Mellanox driver to conditionally execute
+    # these tasks
+    - name: Capture PCI VPD for Dell/Mellanox hybrid NIC
+      command: "lspci -vvv -s {{ pxe_pciid }}"
+      changed_when: False
+      when: ansible_facts[primary_interface]['module'] | regex_search('^mlx')
+      register: lspci_vpd
+      vars:
+        pxe_pciid: "{{ ansible_facts[primary_interface]['pciid'] | string }}"
+
+    # Add that stupid extra dash if we find a stupid  hybrid NIC
+    # (09J2HH is the Dell part number we can look for to identify this
+    # hybrid NIC.
+    - name: Modify NIC name for Dell/Mellanox hybrid NIC
+      set_fact:
+        dell_pci_nic: "{{ dell_pci_nic }}-1"
+      when:
+        - lspci_vpd is defined
+        - lspci_vpd.stdout | default("") | regex_search('09J2HH')
+
+    # Update our existing bios_config dictionary with our new NIC information
+    - name: Override whatever PCIe NIC name we had previously
+      set_fact:
+        bios_config: "{{ bios_config | combine({ansible_system_vendor: { ansible_product_name: { 'bios_attrs': { 'PxeDev1Interface': dell_pci_nic }}}}, recursive=True) }}"
+
+  become: yes

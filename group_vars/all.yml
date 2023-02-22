@@ -1,0 +1,19 @@
+---
+artifact_scheme: http
+artifact_host: artifacts
+artifact_port: 80
+artifact_project: firmware
+artifact_branch: master
+artifact_base_url: "{{ artifact_scheme }}://{{ artifact_host }}:{{ artifact_port }}/{{ artifact_project }}/{{ artifact_branch }}"
+artifact_retries: 10
+artifact_delay: 10
+# Socket level timeout used in the uri module -- specifically for *establishing*
+# and not *completing* a connection with the uri module. Module defult is 30.
+# https://docs.ansible.com/ansible/2.8/modules/uri_module.html#parameters
+default_uri_timeout: 60
+default_uri_retries: 5
+default_uri_delay: 5
+# global timeout setting for anything using the reboot task
+reboot_timeout: 6000
+uefi_task_uri_retries: 80
+uefi_task_uri_delay: 30

@@ -1,0 +1,43 @@
+---
+- block:
+  # A subset of HV V4 servers require an additional BIOS setting in order to
+  # set SST-PP options. Without a concept of "roles" or "intention" for
+  # provisioning, we assume that any 5318Y CPU has SST-PP#4 configured.
+  # TODO: Remove all of this and replace once "roles" are available.
+  - name: Update BIOS attributes for 5318Y SST-PP#4
+    set_fact:
+      bios_config: "{{ bios_config | combine(sst_bios_config, recursive=True) }}"
+    when:
+      "'Intel(R) Xeon(R) Gold 5318Y CPU @ 2.10GHz' in ansible_facts.processor"
+    vars:
+      sst_bios_config:
+        Supermicro:
+          SYS-120C-TN10R:
+            bios_attrs:
+              IntelSST-PP: "Config 4"
+
+  # Disable any built-in UEFI shell targets for SMC servers.
+  # Note that this discovery + modification is required because the UEFI shell
+  # boot order can vary based on chassis or previous OS installations
+  - block:
+    - name: Identify existing UEFI Shell boot targets
+      set_fact:
+        smc_uefi_shell_boot_targets: "{{ smc_bios_attrs | dict2items
+                                                        | selectattr('value', 'search', 'Built-in EFI Shell')
+                                                        | map(attribute='key') }}"
+      vars:
+        smc_bios_attrs: "{{ redfish_results['redfish_facts']['bios_attribute']['entries'][0][1] }}"
+
+    - name: Update bios_config dict with disabled UEFI Shell boot targets
+      set_fact:
+        bios_config: "{{ bios_config | combine({ansible_system_vendor: { ansible_product_name: { 'bios_attrs': { item: 'Disabled' }}}}, recursive=True) }}"
+      with_items: "{{ smc_uefi_shell_boot_targets }}"
+    when:
+      - "'UEFI' in redfish_results['redfish_facts']['bios_attribute']['entries'][0][1]['BootModeSelect']"
+
+  # Perform Supermicro specific actions if flipping from BIOS -> UEFI
+  - name: Include Supermicro specific UEFI flip tasks
+    include_tasks: supermicro_enable_uefi.yml
+    when:
+      - "'UEFI' not in redfish_results['redfish_facts']['bios_attribute']['entries'][0][1]['BootModeSelect']"
+      - "'UEFI' in bios_config[ansible_system_vendor][ansible_product_name]['bios_attrs']['BootModeSelect']"

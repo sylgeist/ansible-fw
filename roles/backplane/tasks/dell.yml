@@ -1,0 +1,74 @@
+---
+- block:
+  # A single chassis model may support different backplane models but will
+  # only ever have "one" model installed/active.
+  - name: Identify backplane model
+    set_fact:
+      backplane_models: "{{ firmware_inventory_models | intersect(supported_backplane_models) }}"
+    vars:
+      supported_backplane_models: "{{ backplane_firmware[ansible_system_vendor][ansible_product_name].keys() | list }}"
+      firmware_inventory_models: "{{ redfish_fw_inventory['redfish_facts']['firmware']['entries'] | map(attribute='Name')
+                                                                                                  | list
+                                                                                                  | unique }}"
+
+  # The 'in' test is used rather than 'search' or 'match' because some Dell
+  # backplane models include gnarly chars like '+' and ':' which are
+  # interpreted for regex reasons.
+  - name: Set backplane firmware information
+    set_fact:
+      backplane_model: "{{ backplane_models | first }}"
+    when: backplane_models | length > 0
+
+  - name: Set expected backplane versions
+    set_fact:
+      backplane_firmware_expected_version: "{{ backplane_firmware[ansible_system_vendor][ansible_product_name][backplane_model]['backplane_expected_version'] }}"
+      backplane_firmware_version: "{{ (redfish_fw_inventory['redfish_facts']['firmware']['entries'] | selectattr('Name', 'in', backplane_model)
+                                                                                                    | selectattr('Id', 'search', 'Current|Installed')
+                                                                                                    | list
+                                                                                                    | first)['Version'] }}"
+    when: backplane_model is defined
+
+  - block:
+    - name: Create Dell backplane upgrade directory
+      tempfile:
+        state: directory
+        suffix: dell_backplane
+      register: dell_backplane_update_temp
+
+    - name: Set Dell backplane update directory fact
+      set_fact:
+        backplane_update_dir: "{{ dell_backplane_update_temp.path }}"
+
+    - name: Download Dell backplane fw
+      get_url:
+        url: "{{ backplane_url }}"
+        dest: "{{ backplane_update_dir }}/backplane.bin"
+        mode: "0755"
+        timeout: "240"
+        checksum: "md5:{{ backplane_md5 }}"
+      register: get_url_status
+      until: get_url_status is succeeded
+      retries: "{{ artifact_retries }}"
+      delay: "{{ artifact_delay }}"
+      vars:
+        backplane_url: "{{ backplane_firmware[ansible_system_vendor][ansible_product_name][backplane_model]['backplane_url'] }}"
+        backplane_md5: "{{ backplane_firmware[ansible_system_vendor][ansible_product_name][backplane_model]['backplane_md5'] }}"
+
+    # Dell 14G backplane updates: RC=2 on successful update
+    # Dell 15G backplane updates: RC=0 on successful update
+    - name: Upgrade/downgrade Dell backplane
+      command: "{{ backplane_update_dir }}/backplane.bin -q -f"
+      register: backplane_upgrade
+      failed_when: (backplane_upgrade.rc != 2 and backplane_upgrade.rc != 0 )
+      notify: "reboot server"
+
+    - name: Clean up Dell backplane FW update
+      file:
+        path: "{{ backplane_update_dir }}"
+        state: absent
+
+    become: yes
+    when:
+      - backplane_firmware_version is defined
+      - backplane_firmware_version is version(backplane_firmware_expected_version, '!=')
+      - not ansible_check_mode

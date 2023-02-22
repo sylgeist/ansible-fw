@@ -1,0 +1,295 @@
+---
+- block:
+    # This is a one-way trip. Good luck.
+    # Also, most of these tasks run from localhost.
+    # Because of that, it is strongly advised to run from awx, jump or a VPN
+    # that permits https traffic to the OOB network.
+    # One other scary thing: due to how these reboots occur, we cannot
+    # honor the skip_reboot flag.
+
+    # Due to a defect we discovered with iDRAC, it is impossible to
+    # flip to UEFI and set the PCIe NIC as a valid UEFI boot target.
+    # To work around this, we'll try to make this change in two stages.
+    - name: Dell SCP Stage 1 - Flip to UEFI
+      uri:
+        url: "https://{{ bmc_address }}/{{ redfish_uri }}"
+        method: POST
+        user: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        status_code:
+          - 202
+        validate_certs: no
+        force_basic_auth: yes
+        timeout: "{{ default_uri_timeout }}"
+        body_format: json
+        body:
+          ShareParameters:
+            Target: "ALL"
+          ShutdownType: "Forced"
+          ImportBuffer: '<SystemConfiguration><Component FQDD="BIOS.Setup.1-1"><Attribute Name="BootMode">Uefi</Attribute></Component></SystemConfiguration>'
+        headers:
+          accept: "application/json"
+          OData-Version: "4.0"
+      register: stage1_import_response
+      until: stage1_import_response is succeeded
+      retries: "{{ uefi_task_uri_retries }}"
+      delay: "{{ uefi_task_uri_delay }}"
+      changed_when: stage1_import_response.status == 202
+      delegate_to: 127.0.0.1
+      vars:
+        redfish_uri: "redfish/v1/Managers/iDRAC.Embedded.1/Actions/Oem/EID_674_Manager.ImportSystemConfiguration"
+
+    # We need to poll the Job to see when it is complete.
+    # Once it is, we proceed to stage2
+    - name: Poll until Stage 1 import completes
+      uri:
+        url: "{{ stage1_import_response.location }}"
+        user: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        validate_certs: no
+        force_basic_auth: yes
+        headers:
+          accept: "application/json"
+          OData-Version: "4.0"
+        timeout: "{{ default_uri_timeout }}"
+      register: stage1_job_status
+      until:
+        - stage1_job_status.json is defined
+        - stage1_job_status.json.TaskState == "Completed"
+        - stage1_job_status.json.TaskStatus == "OK"
+      delegate_to: 127.0.0.1
+      retries: "{{ uefi_task_uri_retries }}"
+      delay: "{{ uefi_task_uri_delay }}"
+
+    - name: Dell SCP Stage 2 - Set PxeDev1EnDis=Enable
+      uri:
+        url: "https://{{ bmc_address }}/{{ redfish_uri }}"
+        method: POST
+        user: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        status_code:
+          - 202
+        validate_certs: no
+        force_basic_auth: yes
+        timeout: "{{ default_uri_timeout }}"
+        body_format: json
+        body:
+          ShareParameters:
+            Target: "ALL"
+          ShutdownType: "Forced"
+          ImportBuffer: '<SystemConfiguration><Component FQDD="BIOS.Setup.1-1"><Attribute Name="PxeDev1EnDis">Enabled</Attribute></Component></SystemConfiguration>'
+        headers:
+          accept: "application/json"
+          OData-Version: "4.0"
+      register: stage2_import_response
+      until: stage2_import_response is succeeded
+      retries: "{{ uefi_task_uri_retries }}"
+      delay: "{{ uefi_task_uri_delay }}"
+      changed_when: stage2_import_response.status == 202
+      delegate_to: 127.0.0.1
+      vars:
+        redfish_uri: "redfish/v1/Managers/iDRAC.Embedded.1/Actions/Oem/EID_674_Manager.ImportSystemConfiguration"
+
+    # We need to poll the Job to see when it is complete.
+    # Once it is, we proceed to stage2
+    - name: Poll until Stage 2 import completes
+      uri:
+        url: "{{ stage2_import_response.location }}"
+        user: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        validate_certs: no
+        force_basic_auth: yes
+        headers:
+          accept: "application/json"
+          OData-Version: "4.0"
+        timeout: "{{ default_uri_timeout }}"
+      register: stage2_job_status
+      until:
+        - stage2_job_status.json is defined
+        - stage2_job_status.json.TaskState == "Completed"
+        - stage2_job_status.json.TaskStatus == "OK"
+      delegate_to: 127.0.0.1
+      retries: "{{ uefi_task_uri_retries }}"
+      delay: "{{ uefi_task_uri_delay }}"
+
+    # Astute readers will notice we are using the same template twice...
+    # that _is_ intentional. After the initial UEFI flip, additional settings
+    # will be available for us to set (like PxeDevEnDis)
+    - name: Dell SCP Stage 3 - Import settings from template
+      uri:
+        url: "https://{{ bmc_address }}/{{ redfish_uri }}"
+        method: POST
+        user: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        status_code:
+          - 202
+        validate_certs: no
+        force_basic_auth: yes
+        timeout: "{{ default_uri_timeout }}"
+        body_format: json
+        body:
+          ShareParameters:
+            Target: "ALL"
+          ShutdownType: "Forced"
+          ImportBuffer: "{{ lookup('template', 'dell_uefi_flip_scp.xml.j2') }}"
+        headers:
+          accept: "application/json"
+          OData-Version: "4.0"
+      register: stage3_import_response
+      until: stage3_import_response is succeeded
+      retries: "{{ uefi_task_uri_retries }}"
+      delay: "{{ uefi_task_uri_delay }}"
+      changed_when: stage3_import_response.status == 202
+      delegate_to: 127.0.0.1
+      vars:
+        redfish_uri: "redfish/v1/Managers/iDRAC.Embedded.1/Actions/Oem/EID_674_Manager.ImportSystemConfiguration"
+
+    - name: Poll until the Stage 3 import completes
+      uri:
+        url: "{{ stage3_import_response.location }}"
+        user: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        validate_certs: no
+        force_basic_auth: yes
+        headers:
+          accept: "application/json"
+          OData-Version: "4.0"
+        timeout: "{{ default_uri_timeout }}"
+      register: stage3_job_status
+      until:
+        - stage3_job_status.json is defined
+        - stage3_job_status.json.TaskState == "Completed"
+        - stage3_job_status.json.TaskStatus == "OK"
+      delegate_to: 127.0.0.1
+      retries: "{{ uefi_task_uri_retries }}"
+      delay: "{{ uefi_task_uri_delay }}"
+
+    # Oh hey, we are back again for some more jank.
+    # Post-UEFI flip, R640s may have stale/unknown (BIOS) boot entries.
+    # These are often labeled "Unknown" or "Windows boot manager"
+    # We have noticed that the presence of these entries _may_
+    # lead to increased PXE timeout failure rates (even though these are not
+    # PXE targets).
+    # Disabling / nuking these targets seems to lead to decreased PXE timeout
+    # errors. Because of that, let's try to clean them up post UEFI flip.
+    # Note: these boot entries are permanently cleaned up during the OS
+    # installation. The Ubuntu installer will use efibootmgr to update disk
+    # based boot targets correctly.
+
+    # Start by capturing our list of boot devices
+    - name: Get boot sources via Redfish
+      uri:
+        url: "https://{{ bmc_address }}/{{ redfish_uri }}"
+        user: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        validate_certs: no
+        force_basic_auth: yes
+        timeout: "{{ default_uri_timeout }}"
+        headers:
+          accept: "application/json"
+          OData-Version: "4.0"
+      vars:
+        redfish_uri: "redfish/v1/Systems/System.Embedded.1/BootSources/"
+      register: redfish_results
+      delay: "{{ uefi_task_uri_delay }}"
+      retries: "{{ uefi_task_uri_retries }}"
+      delegate_to: 127.0.0.1
+      until:
+        - redfish_results is succeeded
+        - redfish_results.json is defined
+        - redfish_results.json.Attributes is defined
+        - redfish_results.json.Attributes.UefiBootSeq is defined
+
+    - name: Extract bootorder from redfish
+      set_fact:
+        redfish_boot_order: "{{ redfish_results.json.Attributes.UefiBootSeq }}"
+
+    # Fun fact, you can't actually delete / disable these "Unknown" boot entries.
+    # If you remove these "Unknown"ers from the data structure and re-PATCH just
+    # the NIC, the iDRAC will append any missing boot targets to the end of the
+    # boot order (even the "Unknown"ers). Note that we are only going to define
+    # this variable (and execute the subsequent tasks) if we detect 'Enabled'
+    # "Unknown"ers. If they are already disabled we can skip all of this.
+    - name: Disable "Unknown" boot entries
+      set_fact:
+        unknown_boot_entries:
+          "{{ unknown_boot_entries | default([]) + [{'Index': boot_item.Index,
+          'Enabled': False,
+          'Id': boot_item.Id,
+          'Name': boot_item.Name,}] }}"
+      with_items:
+        "{{ redfish_boot_order | selectattr('Name', 'search', 'Unknown')
+        | list }}"
+      when: redfish_boot_order | selectattr('Name', 'search', 'Unknown')
+        | selectattr('Enabled', 'equalto', True)
+        | list
+        | length > 0
+      loop_control:
+        loop_var: boot_item
+
+    # We need to first remove the original "Unknown"ers and then re-add our
+    # newly disabled "Unknown"ers
+    - name: Assemble modified boot order
+      set_fact:
+        new_boot_order:
+          "{{ original_boot_list | difference(original_unknown_boot_entries)
+          | union(unknown_boot_entries) }}"
+      vars:
+        original_boot_list: "{{ redfish_boot_order }}"
+        original_unknown_boot_entries:
+          "{{ redfish_boot_order | selectattr('Name', 'search', 'Unknown')
+          | list }}"
+      when: unknown_boot_entries is defined
+
+    # After a recent iDRAC upgrade (R630 / 2.73, R640 / 4.00), Dell servers are
+    # prematurely reporting "success" for the previous SCP XML import jobs.
+    # That results in this "set boot sources" task failing with a 503:
+    # "Unable to apply the configuration changes because an import or export
+    # operation is currently in progress."
+    # See JIRA-1234 for more details, but we are going to loop until
+    # the iDRAC accepts our *bleep*-ing job.
+    # Reverting this back to a reboot/bios config notification now that the SCP import
+    # is no longer in the picture due to Redfish goodness. Fingers crossed!
+    - name: Set boot sources via Redfish
+      uri:
+        url: "https://{{ bmc_address }}/{{ redfish_uri }}"
+        method: PATCH
+        user: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        status_code: 200
+        validate_certs: no
+        force_basic_auth: yes
+        timeout: "{{ default_uri_timeout }}"
+        body_format: json
+        body: "{{ payload | to_json }}"
+        headers:
+          accept: "application/json"
+          OData-Version: "4.0"
+      vars:
+        redfish_uri: "redfish/v1/Systems/System.Embedded.1/BootSources/Settings"
+        payload:
+          Attributes:
+            UefiBootSeq: "{{ new_boot_order }}"
+      register: set_boot_sources_status
+      until:
+        - set_boot_sources_status is defined
+        - set_boot_sources_status is succeeded
+      delegate_to: 127.0.0.1
+      retries: "{{ uefi_task_uri_retries }}"
+      delay: "{{ uefi_task_uri_delay }}"
+      when: unknown_boot_entries is defined
+      notify:
+        - "update bios config on reboot"
+        - "reboot server"
+
+    - name: Flush handlers
+      meta: flush_handlers
+
+    # At this point we are (or should be) done. This meta task will end the play
+    # for Dell hosts that are finished with the BIOS -> UEFI flip. We do _not_
+    # want to continue executing the bios_config role because later bios_config
+    # tasks will fail because of the extra "hand-holding" that Dell servers
+    # require when flipping between BIOS <-> UEFI.
+    # Let's pack it up and grab a beverage!
+    - name: End play after successful UEFI flip
+      meta: end_host

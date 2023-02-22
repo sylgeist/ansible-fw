@@ -1,0 +1,225 @@
+---
+- block:
+    # In certain (rare...hopefully) circumstances, the Lifecycle Controller can
+    # either be disabled or "hung" (in 'recovery'). In this situation, BIOS
+    # updates (and BIOS config changes) _will_ fail spectacularly.
+    # TODO: test if we can "auto-recover" by enabling this via racadm
+    - name: Capture current Lifecycle Controller status (Redfish)
+      community.general.idrac_redfish_info:
+        category: Manager
+        command: GetManagerAttributes
+        baseuri: "{{ bmc_address }}"
+        username: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        timeout: "{{ default_uri_timeout }}"
+      register: idrac_attributes
+
+    - name: Store LifecycleController attributes as a fact variable
+      set_fact:
+        lca_status: "{{ lca_attributes['Attributes']['LCAttributes.1.LifecycleControllerState'] }}"
+      vars:
+        lca_attributes:
+          "{{ idrac_attributes.redfish_facts.entries | selectattr('Id', 'defined')
+          | selectattr('Id', 'equalto', 'LCAttributes')
+          | list
+          | first }}"
+
+    - name: Check if Lifecycle Controller is enabled
+      assert:
+        that: lca_status == "Enabled"
+        success_msg: "Lifecycle Controller is enabled"
+        fail_msg: "Error! Lifecycle Controller is not properly enabled."
+
+  rescue:
+    - name: Enable LCA
+      ansible.builtin.debug:
+        msg: "LCA Disabled! Attempting to Re-enable"
+
+    - name: Set LCA enabled
+      community.general.idrac_redfish_config:
+        category: Manager
+        command: SetLifecycleControllerAttributes
+        baseuri: "{{ bmc_address }}"
+        username: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        manager_attributes:
+          LCAttributes.1.LifecycleControllerState: "Enabled"
+        timeout: "{{ default_uri_timeout }}"
+  when:
+    - ansible_product_name not in ('PowerEdge R630', 'PowerEdge R730xd', 'DSS7500')
+    - not ansible_check_mode
+
+  # For incompatible nodes we need to use racadm
+- block:
+    - name: Capture current Lifecycle Controller status (Legacy)
+      raw: racadm get LifecycleController.LCAttributes.LifecycleControllerState
+      register: racadm_output
+      changed_when: false
+      vars:
+        ansible_connection: ssh
+        ansible_user: "{{ bmc_username }}"
+        ansible_host: "{{ bmc_address }}"
+        ansible_password: "{{ bmc_password }}"
+
+    - name: Check if Lifecycle Controller is enabled R630 Edition
+      assert:
+        that: "'Enabled' in racadm_output.stdout"
+        success_msg: "Lifecycle Controller is enabled"
+        fail_msg: "Error! Lifecycle Controller is not properly enabled."
+  when:
+    - ansible_product_name in ('PowerEdge R630', 'PowerEdge R730xd', 'DSS7500')
+    - not ansible_check_mode
+
+- block:
+    # Later Dell tasks will require this directory to be owned by root
+    # hence the 'become' statement
+    - name: Create Dell BIOS upgrade directory
+      tempfile:
+        state: directory
+        suffix: dell_bios
+      register: dell_bios_update_temp
+
+    - name: Set Dell BIOS update directory fact
+      set_fact:
+        bios_update_dir: "{{ dell_bios_update_temp.path }}"
+
+    # This task executes as root because our temp dir is owned by root
+    - name: Grab Dell BIOS bin
+      get_url:
+        url: "{{ bios_url }}"
+        dest: "{{ bios_update_dir }}/bios.bin"
+        mode: "0766"
+        timeout: "240"
+        checksum: "md5:{{ bios_md5 }}"
+      register: get_url_status
+      until: get_url_status is succeeded
+      retries: "{{ artifact_retries }}"
+      delay: "{{ artifact_delay }}"
+
+    # This block creates additional verbose debug logs during the BIOS upgrade.
+    # Logs are uploaded to an Spaces bucket prior to reboot. (Dell needs these
+    # logs for troubleshooting.)
+    # Conditionally enabled by setting enable_dell_bios_upgrade_debug to true.
+    # JIRA-1234
+    - block:
+        - name: Extract Dell BIOS DUP
+          command: "./bios.bin --extract ."
+          args:
+            chdir: "{{ bios_update_dir }}"
+
+        # These commands came from Dell and appear to be entirely undocumented
+        - name: Create Dell log files
+          file:
+            path: "{{ bios_update_dir }}/{{ item }}"
+            state: touch
+          with_items:
+            - dupdebuglog
+            - smalldebuglog
+
+        - name: Upgrade/downgrade Dell BIOS
+          command: "./spsetup.sh -qf"
+          args:
+            chdir: "{{ bios_update_dir }}"
+          register: bios_upg
+          failed_when: bios_upg.rc != 2 # 2 == REBOOT_REQUIRED
+          notify: "reboot server"
+
+        - name: Set Dell BIOS debug logs filename
+          set_fact:
+            dell_debug_filename: "{{ bios_update_dir }}/{{ archive_file_name }}"
+          vars:
+            archive_file_name: "dell-bios-logs-{{ ansible_product_serial }}-{{ '%Y%m%d-%H%M%S' | strftime }}.tar.gz"
+
+        - name: Gather debug logs
+          archive:
+            path: "{{ bios_update_dir }}/*.log"
+            dest: "{{ dell_debug_filename }}"
+            format: gz
+
+        # This is a total copy/pasta from the previous MLNX / spaces upload
+        # (just an FYI)
+        # Cribbed from hpw 'Upload SEL to Spaces' task.
+        # We need access to the following AWX env vars:
+        # - AWS_ACCESS_KEY_ID
+        # - AWS_SECRET_ACCESS_KEY
+        # Notify user if we don't have these keys (aka running locally) and skip
+        # these tasks accordingly.
+        # This play can be executed locally by setting these ENV vars manually.
+        # Note that this Spaces bucket is under the "Platform" shared team in the
+        # "Operations" project.
+
+        # Delegate set_facts locally due to some super strange AWX behavior that
+        # seems to prevent passing ENV vars to the remote hosts. ENV vars are
+        # to the AWX worker though. ¯\_(ツ)_/¯
+
+        - name: Set Spaces credential facts
+          set_fact:
+            aws_access_key: "{{ lookup('env', 'AWS_ACCESS_KEY_ID') }}"
+            aws_secret_key: "{{ lookup('env', 'AWS_SECRET_ACCESS_KEY') }}"
+          delegate_to: 127.0.0.1
+          when:
+            - lookup('env', 'AWS_ACCESS_KEY_ID') | length > 0
+            - lookup('env', 'AWS_SECRET_ACCESS_KEY') | length > 0
+
+        - name: Notify user of missing Spaces creds
+          debug:
+            msg: "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are not set, skipping Spaces upload of Dell debug data."
+          when:
+            - aws_access_key is not defined
+            - aws_secret_key is not defined
+
+        # Another weird quirk, I couldn't wrap these two tasks in a block due to a
+        # later include_task operation. 2 x ¯\_(ツ)_/¯
+
+        # We need to install s3 / boto deps for the aws_s3 task
+        # Note the python3 package dep, for some reason python (2) throws an insane
+        # error during a later task when trying to upload to s3.
+        - name: Install package deps for Spaces upload
+          package:
+            name: python3-boto3
+          when:
+            - aws_access_key is defined
+            - aws_secret_key is defined
+
+        # We are going to use python3 for this. I can't explain this, but python2
+        # will throw a crazy boto3 error during this task whereas python3 works fine.
+        # It feels very "dirty" to switch interpreters for a single task, but I don't
+        # have time to troubleshoot python2.
+        - name: Upload Dell BIOS debug logs to Spaces
+          aws_s3:
+            aws_access_key: "{{ aws_access_key }}"
+            aws_secret_key: "{{ aws_secret_key }}"
+            mode: put
+            src: "{{ dell_debug_filename }}"
+            bucket: firmware-updater
+            object: "{{ dell_debug_filename | basename }}"
+            metadata: "Content-Type=application/gzip"
+            encrypt: false
+            rgw: true
+            s3_url: https://spaces.url
+          vars:
+            ansible_python_interpreter: /usr/bin/python3
+          when:
+            - aws_access_key is defined
+            - aws_secret_key is defined
+
+      when: enable_dell_bios_upgrade_debug | default(False) | bool
+
+    # Normal BIOS upgrade if we don't want verbose debug logs
+    - block:
+        - name: Upgrade/downgrade Dell BIOS
+          command: "{{ bios_update_dir }}/bios.bin -q -f"
+          register: bios_upg
+          failed_when: bios_upg.rc != 2 # 2 == REBOOT_REQUIRED
+          notify: "reboot server"
+      when: not enable_dell_bios_upgrade_debug | default(False) | bool
+
+    - name: Clean up Dell BIOS bin
+      file:
+        path: "{{ bios_update_dir }}"
+        state: absent
+
+  become: yes
+  when:
+    - ansible_bios_version is version(expected_bios_version, '!=')
+    - not ansible_check_mode

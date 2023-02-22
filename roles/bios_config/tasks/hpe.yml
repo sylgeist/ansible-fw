@@ -1,0 +1,76 @@
+---
+- block:
+  # There is a very annoying difference between nearly identical DL360 Gen10
+  # chassis: the onboard NIC attribute is labeled slightly different.
+  # P19767-B21 = FlexLom1Enable (v3.5)
+  # 867959-B21 = EmbNicEnable (v3)
+  # 867960-B21 = EmbNicEnable (early v3.5 test nodes, none in PRD)
+  # Because of this, we'll need to modify our bios_attrs data structure to
+  # add the appropriate key (otherwise redfish will throw an error when we try
+  # to set a non-existent redfish attribute).
+  - block:
+    - name: Collect HPE ProLiant chassis information
+      command: dmidecode -t 1
+      become: yes
+      changed_when: False
+      register: dmidecode_out
+
+    - name: Identify HPE ProLiant detailed chassis part number
+      set_fact:
+        dl360_chassis_sku: "{{ dmidecode_out.stdout |  regex_search('SKU Number: (.+)', '\\1')
+                                                    | first }}"
+    # Quick little tangent... HPE sent us a (big) batch of Gen10s that were
+    # flashed with incorrect DMI information at the factory. These servers
+    # report a chassis mode / Product ID of 468640-B21, however they _should_
+    # be 867959-B21. The server toe tag and all support contracts reflect the
+    # correct Product ID (867959-B21), but unfortunately, DMI Table 1 reports
+    # the improperly flashed value of 468640-B21. We need to catch and fix
+    # these. Luckily we can do this with Redfish! Because of that, we'll
+    # add an extra BIOS Attribute for the 468640-B21-ers and zap them in
+    # firmware_updater.
+    - name: Fix Product ID for 468640-B21 nodes
+      set_fact:
+        bios_config: "{{ bios_config | combine({ansible_system_vendor: {ansible_product_name: {'bios_attrs': {'ProductId': '867959-B21'}}}}, recursive=True) }}"
+        dl360_chassis_sku: "867959-B21"
+      when: "'468640-B21' in dmidecode_out.stdout"
+
+    # This is clunky and a stupidly long line.
+    # ⛳  welcome.
+    # (Also, it's crappy that we are using a task to define configuration
+    # state instead of a vars file.)
+    # Note that all _new_ HPE DL360 Gen10 chassis will have "FlexLom1Enable".
+    # If we encounter an unknown chassis it will probably (heh) be safe to
+    # default to FlexLom1Enable according to HPE.
+    - name: Modify BIOS attribute data structure
+      set_fact:
+        bios_config: "{{ bios_config | combine({ansible_system_vendor: {ansible_product_name: {'bios_attrs': {dl360_chassis_sku_table[dl360_chassis_sku]|default('FlexLom1Enable'): 'Disabled'}}}}, recursive=True) }}"
+      vars:
+        dl360_chassis_sku_table:
+          P19767-B21: "FlexLom1Enable"
+          867959-B21: "EmbNicEnable"
+          867960-B21: "EmbNicEnable"
+    when: ansible_product_name == 'ProLiant DL360 Gen10'
+
+  # A subset of HV V4 servers require an additional BIOS setting in order to
+  # set SST-PP options. Without a concept of "roles" or "intention" for
+  # provisioning, we assume that any 5318Y CPU has SST-PP#4 configured.
+  # TODO: Remove all of this and replace once "roles" are available.
+  - name: Update BIOS attributes for 5318Y SST-PP#4
+    set_fact:
+      bios_config: "{{ bios_config | combine(sst_bios_config, recursive=True) }}"
+    when:
+      "'Intel(R) Xeon(R) Gold 5318Y CPU @ 2.10GHz' in ansible_facts.processor"
+    vars:
+      sst_bios_config:
+        HPE:
+          ProLiant DL360 Gen10 Plus:
+            bios_attrs:
+              DynamicIntelSpeedSelectMode: "Disabled"
+              IntelSpeedSelectConfigLevel: "Config2"
+
+  # Perform HPE specific actions if flipping from BIOS -> UEFI
+  - name: Include HPE specific UEFI flip tasks
+    include_tasks: hpe_enable_uefi.yml
+    when:
+      - "'LegacyBios' in redfish_results['redfish_facts']['bios_attribute']['entries'][0][1]['BootMode']"
+      - "'Uefi' in bios_config[ansible_system_vendor][ansible_product_name]['bios_attrs']['BootMode']"

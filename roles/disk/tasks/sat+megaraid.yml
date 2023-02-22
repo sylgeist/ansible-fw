@@ -1,0 +1,135 @@
+---
+- block:
+  # To avoid potentially operating on the same set of disks twice, we'll only
+  # use disks that are reported as "sat+megaraid" via smartmontools v7.
+  - name: Identify megaraid drives via serial number
+    command: "smartctl -i {{ item.drive }} -d {{ item.driver }},{{ item.drive_index }}"
+    with_items: "{{ drive_list | selectattr('driver', 'equalto', 'sat+megaraid')
+                               | list }}"
+    register: megaraid_disk_info
+    changed_when: False
+    check_mode: False
+
+  # Dell HVs will use perccli for this, everything else will use storcli
+  # (All Dell servers except for DSS7500 sleds, they use storcli. 🤷)
+  - name: Use perccli for Dell servers
+    set_fact:
+      storcli_package: perccli
+      storcli_bin: perccli64
+    when:
+      - ansible_system_vendor == "Dell Inc."
+      - ansible_product_name != "DSS7500"
+
+  - name: Use storcli for all non-Dell servers
+    set_fact:
+      storcli_package: storcli
+      storcli_bin: storcli64
+    when: storcli_bin is undefined
+
+  # This is a little bit clunky, but we can dump a list of all disks and then
+  # look for drive serial number matches between smartctl <-> storcli|perccli.
+  # The other alternative is to identify controllers, then virtual disks on
+  # those controllers and then try to identify physical disks in that virtual
+  # disk...but that's a lot of loops...
+  - name: Capture HBA output
+    command: "{{ storcli_bin }} /call/eall/sall show all"
+    register: hba_output
+    changed_when: False
+    check_mode: False
+
+  # This is similar to how the sat (SATA) task works, but we also want
+  # the drive serial number.
+  # Later, we'll use this serial number to identify the physical drive
+  # location for firmware updates.
+  # Also, we trust the `smartctl` output for Device Model more than storcli
+  # or perccli. These utils _may_ truncate Device Model.
+  #
+  # One last thing...certain Dell PERCs will report SATA drives in JBOD as
+  # both sat and megaraid+sat. To avoid this, we'll skip any drives that
+  # already appeared in our sata_disks list (since this task executes first).
+  - name: Assemble Broadcom HW RAID datastructure with block device, model and f/w version
+    set_fact:
+      megaraid_disks: "{{ megaraid_disks | default([])
+                                         | union([{'disk': item.item,
+                                                   'model':  model,
+                                                   'firmware_version': firmware_version,
+                                                   'serial_number': serial_number,
+                                                   'slot_location': slot_location }]) }}"
+    when:
+      - item.stdout is search("Firmware Version:")
+      - item.stdout is search("Device Model:")
+      - item.stdout is search("Serial Number:")
+      - serial_number not in sata_serial_numbers
+    with_items: "{{ megaraid_disk_info.results }}"
+    vars:
+      disk: "{{ item.item }}"
+      model: "{{ item.stdout | regex_search('Device Model:\\s+(.+)', '\\1')
+                             | first }}"
+      firmware_version: "{{ item.stdout | regex_search('Firmware Version:\\s+(.+)', '\\1')
+                                        | first }}"
+      serial_number: "{{ item.stdout | regex_search('Serial Number:\\s+(.+)', '\\1')
+                                     | first }}"
+      slot_location: "{{ hba_output.stdout | regex_search('(\\/c[0-9]+\\/e[0-9]+\\/s[0-9]+) Device attributes :\\s+=+\\s+SN = (' + serial_number + ')', '\\1')
+                                           | first }}"
+      sata_serial_numbers: "{{ sata_disks | default([])
+                                          | map(attribute='serial_number')
+                                          | list }}"
+
+    loop_control:
+      label: "{{ item.item }}"
+
+  - block:
+    # A lot of this is copy/pasta from the sat (SATA) task
+    - name: Create Broadcom HW RAID fw update directory
+      tempfile:
+        state: directory
+        suffix: diskfw
+      register: diskfw_directory
+      changed_when: false
+
+    - name: Download Broadcom HW RAID disk fw
+      get_url:
+        url: "{{ disk_firmware[item.model]['firmware_url'] }}"
+        dest: "{{ diskfw_directory.path }}/{{ disk_firmware[item.model]['firmware_url'] | urlsplit('path') | basename }}"
+        checksum: "md5:{{ disk_firmware[item.model]['firmware_md5'] }}"
+      register: get_url_status
+      until: get_url_status is succeeded
+      retries: "{{ artifact_retries }}"
+      delay: "{{ artifact_delay }}"
+      with_items: "{{ megaraid_disks }}"
+      when:
+        - item.model is in disk_firmware
+        - item.firmware_version is version((disk_firmware[item.model]['expected_firmware_version']), "!=")
+
+    # Let's err on the side of caution and add a pause in between disk fw updates
+    - name: Update Broadcom HW RAID disk firmware
+      command: "{{ storcli_bin }} {{ item.slot_location }} download src={{ fwpath }}"
+      with_items: "{{ megaraid_disks }}"
+      when:
+        - item.model is in disk_firmware
+        - item.firmware_version is version((disk_firmware[item.model]['expected_firmware_version']), "!=")
+      notify: "reboot server"
+      vars:
+        fwpath: "{{ diskfw_directory.path }}/{{ disk_firmware[item.model]['firmware_url'] | urlsplit('path') | basename }}"
+      loop_control:
+        pause: 2
+
+    - name: Remove Broadcom HW RAID disk fw dir
+      file:
+        path: "{{ diskfw_directory.path }}"
+        state: absent
+      changed_when: false
+
+    when:
+      - megaraid_disks | default([]) | length > 0
+      - not ansible_check_mode
+
+  become: yes
+
+- name: MegaRAID Firmware Version Check
+  set_fact:
+    fw_check: "{{ fw_check | default([]) }} + ['SATA MegaRAID (Actual/Expected): {{ item.firmware_version }}/{{ disk_firmware[item.model]['expected_firmware_version'] }}']"
+  with_items: "{{ megaraid_disks }}"
+  when:
+    - megaraid_disks is defined
+    - ansible_check_mode

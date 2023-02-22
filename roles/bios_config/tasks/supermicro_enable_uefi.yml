@@ -1,0 +1,158 @@
+---
+- block:
+  # Ahoy, get ready for more jank.
+  # Supermicro servers (only tested on AS -2113S-WN24RT so far) require a Dell
+  # like "BIOS -> UEFI specific set of tasks". Following a BIOS -> UEFI flip,
+  # the UEFI shell will be enabled as the first boot device which prevents
+  # additional reboots from completing (because the node "hangs" at the UEFI
+  # shell). To address this, we will:
+  # - Only change boot mode
+  # - Reboot
+  # - Wait for POST to complete
+  # - Disable UEFI shell
+  # - Reboot
+  # - Execute the remaining BIOS config changes
+  - name: Change bootmode to UEFI
+    community.general.redfish_config:
+      category: Systems
+      command: SetBiosAttributes
+      bios_attributes:
+        BootModeSelect: "UEFI"
+      baseuri: "{{ bmc_address }}"
+      username: "{{ bmc_username }}"
+      password: "{{ bmc_password }}"
+      timeout: "{{ default_uri_timeout }}"
+    delay: "{{ default_uri_delay }}"
+    retries: "{{ default_uri_retries }}"
+    delegate_to: 127.0.0.1
+
+  - name: Power cycle node
+    community.general.redfish_command:
+      category: Systems
+      command: PowerReboot
+      baseuri: "{{ bmc_address }}"
+      username: "{{ bmc_username }}"
+      password: "{{ bmc_password }}"
+      timeout: "{{ default_uri_timeout }}"
+    delegate_to: 127.0.0.1
+
+  # Note that hardcoding this URI is "not a good thing". The DMTF would advise
+  # to identify the appropriate URI by starting at the top level /redfish/v1
+  # API endpoint and then hyperlink-ing to the correct pending settings
+  # location. But ain't nobody got time for that...
+  # TODO: replace the hardcoded redfish_uri with "discovery" to dynamically
+  #       identify this location.
+  - name: Poll for completion of pending BIOS changes
+    uri:
+      url: "https://{{ bmc_address }}/{{ redfish_uri }}"
+      user: "{{ bmc_username }}"
+      password: "{{ bmc_password }}"
+      validate_certs: no
+      force_basic_auth: yes
+      headers:
+        accept: 'application/json'
+      timeout: "{{ default_uri_timeout }}"
+    register: pending_settings
+    until:
+    - pending_settings.json is defined
+    - "'Attributes' not in pending_settings.json"
+    delegate_to: 127.0.0.1
+    retries: "{{ uefi_task_uri_retries }}"
+    delay: "{{ uefi_task_uri_delay }}"
+    vars:
+      redfish_uri: "/redfish/v1/Systems/1/Bios/SD"
+
+  # There can be a race condition where the previous BIOS change + reboot
+  # completed but the BMC doesn't respond with the updated attributes.
+  # Pause
+  - name: Pause to allow for BIOS attribute discovery
+    pause:
+      seconds: 30
+
+  # Identify current BIOS settings after the flip
+  - name: Capture current BIOS settings post UEFI flip
+    community.general.redfish_info:
+      command: GetBiosAttributes
+      baseuri: "{{ bmc_address }}"
+      username: "{{ bmc_username }}"
+      password: "{{ bmc_password }}"
+      timeout: "{{ default_uri_timeout }}"
+    register: redfish_results
+    delay: "{{ default_uri_delay }}"
+    retries: "{{ default_uri_retries }}"
+    until:
+      - redfish_results is succeeded
+      - redfish_results['redfish_facts']['bios_attribute']['entries'][0] | default([]) | length >= 2
+    delegate_to: 127.0.0.1
+
+  # Disable any built-in UEFI shell targets for SMC servers.
+  # Note that this discovery + modification is required because the UEFI shell
+  # boot order can vary based on chassis or previous OS installations
+  - block:
+    - name: Identify existing UEFI Shell boot targets
+      set_fact:
+        smc_uefi_shell_boot_targets: "{{ smc_bios_attrs | dict2items
+                                                        | selectattr('value', 'search', 'Built-in EFI Shell')
+                                                        | map(attribute='key') }}"
+      vars:
+        smc_bios_attrs: "{{ redfish_results['redfish_facts']['bios_attribute']['entries'][0][1] }}"
+
+    - name: Update bios_config dict with disabled UEFI Shell boot targets
+      set_fact:
+        bios_config: "{{ bios_config | combine({ansible_system_vendor: { ansible_product_name: { 'bios_attrs': { item: 'Disabled' }}}}, recursive=True) }}"
+      with_items: "{{ smc_uefi_shell_boot_targets }}"
+
+
+  # Apply remaining settings
+  - name: Configure BIOS Settings
+    community.general.redfish_config:
+      category: Systems
+      command: SetBiosAttributes
+      bios_attributes: "{{ bios_config[ansible_system_vendor][ansible_product_name]['bios_attrs'] }}"
+      baseuri: "{{ bmc_address }}"
+      username: "{{ bmc_username }}"
+      password: "{{ bmc_password }}"
+      timeout: "{{ default_uri_timeout }}"
+    delegate_to: 127.0.0.1
+
+  - name: Power cycle node
+    community.general.redfish_command:
+      category: Systems
+      command: PowerReboot
+      baseuri: "{{ bmc_address }}"
+      username: "{{ bmc_username }}"
+      password: "{{ bmc_password }}"
+      timeout: "{{ default_uri_timeout }}"
+    delegate_to: 127.0.0.1
+
+  - name: Poll for completion of pending BIOS changes
+    uri:
+      url: "https://{{ bmc_address }}/{{ redfish_uri }}"
+      user: "{{ bmc_username }}"
+      password: "{{ bmc_password }}"
+      validate_certs: no
+      force_basic_auth: yes
+      headers:
+        accept: 'application/json'
+      timeout: "{{ default_uri_timeout }}"
+    register: pending_settings
+    until:
+    - pending_settings.json is defined
+    - "'Attributes' not in pending_settings.json"
+    delegate_to: 127.0.0.1
+    retries: "{{ uefi_task_uri_retries }}"
+    delay: "{{ uefi_task_uri_delay }}"
+    vars:
+      redfish_uri: "/redfish/v1/Systems/1/Bios/SD"
+
+  - name: Verify node reboots
+    wait_for_connection:
+      timeout: "{{ reboot_timeout }}"
+
+  # At this point we are (or should be) done. This meta task will end the play
+  # for Supermicro hosts that are finished with the BIOS -> UEFI flip. We do not
+  # want to continue executing the bios_config role because later bios_config
+  # tasks will fail because of the extra "hand-holding" that Supermicro servers
+  # require when flipping between BIOS <-> UEFI.
+  - name: End play after successful UEFI flip
+    meta: end_host

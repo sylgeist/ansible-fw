@@ -1,0 +1,174 @@
+---
+- block:
+    - name: Include Dell environmental settings
+      include_tasks: dell_environmentals.yml
+      when: ansible_product_name in ('PowerEdge R740xd', 'PowerEdge R730xd', 'DSS7500')
+
+    # We have to do some jank for Dell servers to detect our PCIe NICs
+    # Checkout JIRA-1234
+    # TL;DR Dell is the worst and our PCIe NICs are named inconsistently
+    # Because of that, we need to derive our NIC names
+    # (even though we shouldn't have to)
+    - name: Properly identify Dell PCIe NICs
+      include_tasks: dell_pci_nic_discovery.yml
+      when:
+        - (bios_attrs['IntegratedNetwork1'] is defined and bios_attrs['IntegratedNetwork1'] == 'DisabledOs')
+          or
+          (bios_attrs['EmbNic1Nic2'] is defined and bios_attrs['EmbNic1Nic2'] == 'DisabledOs')
+        - bios_attrs['BootMode'] == 'Uefi'
+      vars:
+        bios_attrs: "{{ bios_config[ansible_system_vendor][ansible_product_name]['bios_attrs'] }}"
+
+    # All aboard the jank train, woo woo!
+    # With the addition of HBA-less Dell servers, we need to remove the BIOS attr
+    # 'IntegratedRaid' from our list of default keys and selectively add it for
+    # servers that do have HBAs. If this key is present for HBA-less servers
+    # redfish calls to modify the BIOS attribute will fail _or_ the SCP XML
+    # import process will fail to process the non-existent key.
+    # To address this we will add the IntegratedRaid key to our dict if
+    # the server in question does have an HBA and default to omitting this key
+    # from our bios_attribute dictionary.
+    # Note that we can't determine "HBA presence" using host based tooling like
+    # perccli or lspci. If IntegratedRaid is disabled via BIOS, the adapter will
+    # not be presented to the host OS. To address this, we'll check the presence
+    # of a BIOS attr.
+    - name: Modify bios_attrs dictionary to include IntegratedRaid
+      set_fact:
+        bios_config: "{{ bios_config | combine({ansible_system_vendor: { ansible_product_name: { 'bios_attrs': { 'IntegratedRaid': 'Enabled' }}}}, recursive=True) }}"
+      when:
+        - "'IntegratedRaid' in redfish_results['redfish_facts']['bios_attribute']['entries'][0][1]"
+
+    # A subset of HV V4 servers require an additional BIOS setting in order to
+    # set SST-PP options. Without a concept of "roles" or "intention" for
+    # provisioning, we assume that any 5318Y CPU has SST-PP#4 configured.
+    # TODO: Remove all of this and replace once "roles" are available.
+    - name: Update BIOS attributes for 5318Y SST-PP#4
+      set_fact:
+        bios_config: "{{ bios_config | combine(sst_bios_config, recursive=True) }}"
+      when: "'Intel(R) Xeon(R) Gold 5318Y CPU @ 2.10GHz' in ansible_facts.processor"
+      vars:
+        sst_bios_config:
+          Dell Inc.:
+            PowerEdge R650xs:
+              bios_attrs:
+                ProcIssSetting: "IssOp3"
+
+    # Dell 15G (e.g. R650xs v4) servers require an Identity Module (IDM). A few
+    # fun facts about installing IDMs:
+    # - IDMs cannot be uninstalled (only overwritten)
+    # - Installation requires a serer reboot -> iDRAC reboot -> server reboot
+    # - IDM installation cannot be combined with other updates / BIOS Config Jobs
+    # - For servers that require IDMs, an IDM _should_ always be present...but...
+    - block:
+        # Similar to the SST-PP check, R650xs servers with an 8358 CPU require a
+        # different IDM. Override the defaults when we detect that CPU + chassis
+        # combo.
+        - name: Update IDM settings for R650xs + 8358 CPU combo
+          set_fact:
+            bios_config: "{{ bios_config | combine(idm_bios_config, recursive=True) }}"
+          when: "'Intel(R) Xeon(R) Platinum 8358 CPU @ 2.60GHz' in ansible_facts.processor"
+          vars:
+            idm_bios_config:
+              Dell Inc.:
+                PowerEdge R650xs:
+                  identity_module:
+                    name: "8J7VX"
+                    version: 13.01
+                    url: "{{ artifact_base_url }}/8J7VX_PowerEdgeR650xs_CustBSU_13_01.pm"
+
+        - name: Identify current IDM module name and version
+          set_fact:
+            idm_name:
+              "{{ (firmware_facts | selectattr('Name', 'search', 'Identity Module')
+              | first)['Name']
+              | regex_search('\\((.+)\\)', '\\1')
+              | first }}"
+            idm_version:
+              "{{ (firmware_facts | selectattr('Name', 'search', 'Identity Module')
+              | first)['Version'] }}"
+          vars:
+            firmware_facts: "{{ redfish_fw_inventory.redfish_facts.firmware.entries }}"
+          when:
+            - firmware_facts | selectattr('Name', 'search', 'Identity Module')
+              |  length > 0
+
+        # There is a bug in iDRAC that prevents using the native RF SimpleUpdate.
+        # As a work around, use one of Dell's OEM extensions to perform a
+        # SimpleUpdate-ish update, which will schedule the appropriate job.
+        # TODO: Upgrade to iDRAC 5.10.## in December 2021 and update this.
+        - name: Install IDM module
+          uri:
+            url: "https://{{ bmc_address }}/{{ redfish_uri }}"
+            method: POST
+            user: "{{ bmc_username }}"
+            password: "{{ bmc_password }}"
+            status_code:
+              - 202
+            validate_certs: no
+            force_basic_auth: yes
+            timeout: "{{ default_uri_timeout }}"
+            body_format: json
+            body:
+              URI: "{{ bios_config[ansible_system_vendor][ansible_product_name]['identity_module']['url'] }}"
+            headers:
+              accept: "application/json"
+              OData-Version: "4.0"
+          register: idm_install_response
+          until: idm_install_response is succeeded
+          retries: "{{ default_uri_retries}}"
+          delay: "{{ default_uri_timeout }}"
+          changed_when: idm_install_response.status == 202
+          vars:
+            redfish_uri: "redfish/v1/Dell/Systems/System.Embedded.1/DellSoftwareInstallationService/Actions/DellSoftwareInstallationService.InstallFromURI"
+            expected_idm_name: "{{ bios_config[ansible_system_vendor][ansible_product_name]['identity_module']['name'] }}"
+            expected_idm_version: "{{ bios_config[ansible_system_vendor][ansible_product_name]['identity_module']['version'] }}"
+          when:
+            - idm_name is not defined or (idm_name != expected_idm_name or idm_version is version(expected_idm_version, 'ne'))
+          notify: "reboot server"
+
+        # The Dell InstallFromURI API endpoint will immediately return "success"
+        # even though the firmware is downloading in the background and the update
+        # job is still being scheduled. Add a slight pause as a workaround.
+        - name: Pause while IDM install job is scheduled
+          pause:
+            seconds: 15
+          when: idm_install_response is changed
+
+        # An immediate reboot is required after scheduling the IDM installation
+        - name: Force reboot handlers after IDM installation
+          meta: flush_handlers
+
+        # After server reboot, restart iDRAC to load IDM
+        - name: Reboot iDRAC to load IDM
+          community.general.redfish_command:
+            category: Manager
+            command: PowerGracefulRestart
+            baseuri: "{{ bmc_address }}"
+            username: "{{ bmc_username }}"
+            password: "{{ bmc_password }}"
+            timeout: "{{ default_uri_timeout }}"
+          notify: "reboot server"
+          retries: "{{ default_uri_retries }}"
+          register: idrac_restart_result
+          when: idm_install_response is changed
+          until:
+            - idrac_restart_result is succeeded
+
+        # Yeah, this really takes 6 minutes
+        - name: Wait while BMC reboots
+          pause:
+            seconds: 360
+          when: idrac_restart_result is changed
+
+        # Another reboot is required post iDRAC restart to rerun CSIOR
+        - name: Force reboot handlers after iDRAC reboot
+          meta: flush_handlers
+      when:
+        - "'identity_module' in bios_config[ansible_system_vendor][ansible_product_name]"
+
+    # Perform Dell specific actions if flipping from BIOS -> UEFI
+    - name: Include Dell specific UEFI flip tasks
+      include_tasks: dell_enable_uefi.yml
+      when:
+        - "'Bios' in redfish_results['redfish_facts']['bios_attribute']['entries'][0][1]['BootMode']"
+        - "'Uefi' in bios_config[ansible_system_vendor][ansible_product_name]['bios_attrs']['BootMode']"

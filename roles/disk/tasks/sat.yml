@@ -1,0 +1,94 @@
+---
+- block:
+  - name: Identify SATA model and firmware information
+    command: "smartctl -i {{ item }}"
+    with_items: "{{ drive_list | selectattr('driver', 'equalto', 'sat')
+                               | map(attribute='drive')
+                               | list }}"
+
+    register: sata_disk_info
+    changed_when: false
+    check_mode: False
+
+  # Note that tools like lsblk and lshw strip the full model number
+  # Unfortunately it appears that ansible uses similar tools to gather facts,
+  # the model number is also truncated using the built in fact gathering.
+  # Let's also override the loop label to keep ansible output...sane.
+  - name: Assemble SATA datastructure with block device, model and f/w version
+    set_fact:
+      sata_disks: "{{ sata_disks | default([])
+                                 | union([{'disk': item.item,
+                                           'model': (item.stdout | regex_search('Device Model:\\s+(.+)', '\\1')
+                                                                 | first),
+                                           'firmware_version': (item.stdout | regex_search('Firmware Version:\\s+(.+)', '\\1')
+                                                                            | first),
+                                           'serial_number': (item.stdout | regex_search('Serial Number:\\s+(.+)', '\\1')
+                                                                         | first)}]) }}"
+    when:
+      - item.stdout is search("Firmware Version:")
+      - item.stdout is search("Device Model:")
+      - item.stdout is search("Serial Number:")
+    with_items: "{{ sata_disk_info.results }}"
+    loop_control:
+      label: "{{ item.item }}"
+
+  # Let's skip all of these tasks if we can't detect disk model/firmware
+  # (An example of "no disks" would be hardware RAID)
+
+  - block:
+    # We could probably be more graceful to avoid creating this directory
+    # if all firmware is current
+    - name: Create SATA disk fw update directory
+      tempfile:
+        state: directory
+        suffix: diskfw
+      register: diskfw_directory
+      changed_when: false
+
+    - name: Download SATA disk fw
+      get_url:
+        url: "{{ disk_firmware[item.model]['firmware_url'] }}"
+        dest: "{{ diskfw_directory.path }}/{{ disk_firmware[item.model]['firmware_url'] | urlsplit('path') | basename }}"
+        checksum: "md5:{{ disk_firmware[item.model]['firmware_md5'] }}"
+      register: get_url_status
+      until: get_url_status is succeeded
+      retries: "{{ artifact_retries }}"
+      delay: "{{ artifact_delay }}"
+      with_items: "{{ sata_disks }}"
+      when:
+        - item.model is in disk_firmware
+        - item.firmware_version is version((disk_firmware[item.model]['expected_firmware_version']), "!=")
+
+    # Let's err on the side of caution and add a pause in between disk fw updates
+    - name: Update SATA disk firmware
+      command: "hdparm --yes-i-know-what-i-am-doing --please-destroy-my-drive --fwdownload {{ fwpath }} {{ item.disk }}"
+      with_items: "{{ sata_disks }}"
+      when:
+        - item.model is in disk_firmware
+        - item.firmware_version is version((disk_firmware[item.model]['expected_firmware_version']), "!=")
+      register: diskfw_update_status
+      notify: "reboot server"
+      vars:
+        fwpath: "{{ diskfw_directory.path }}/{{ disk_firmware[item.model]['firmware_url'] | urlsplit('path') | basename }}"
+      loop_control:
+        pause: 2
+
+    - name: Remove SATA disk fw dir
+      file:
+        path: "{{ diskfw_directory.path }}"
+        state: absent
+      changed_when: false
+
+    when:
+      - sata_disks | default([]) | length > 0
+      - not ansible_check_mode
+
+  become: yes
+
+- name: SATA Firmware Version Check
+  set_fact:
+    fw_check: "{{ fw_check | default([]) }} + ['SATA (Actual/Expected): {{ item.firmware_version }}/{{ disk_firmware[item.model]['expected_firmware_version'] }}']"
+  with_items: "{{ sata_disks }}"
+  when:
+    - sata_disks is defined
+    - ansible_check_mode

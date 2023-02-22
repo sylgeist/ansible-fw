@@ -1,0 +1,134 @@
+---
+- block:
+  # Run various checks for known DMI/SMBIOS issues
+  - name: Capture dmidecode output
+    command: dmidecode
+    register: dmidecode_out
+    changed_when: False
+    ignore_errors: True
+
+  # OEM Dell R630s can be identified by DMI type 11 string 4 = 8134
+  - block:
+    - name: Set missing ansible_product_name for OEM R630
+      set_fact:
+        ansible_product_name: "PowerEdge R630"
+        ansible_system_vendor: "Dell Inc."
+
+    - name: Set missing ansible_product_name for OEM R630 globally
+      set_stats:
+        data:
+          ansible_product_name: "{{ ansible_product_name }}"
+          ansible_system_vendor: "{{ ansible_system_vendor }}"
+    when:
+      - dmidecode_out.rc == 0
+      - "'String 4: 7[8134]' in dmidecode_out.stdout"
+
+  # Supermicro modified the system-product-name after we asked for specific
+  # BIOS configuration settings. We resolved this issue with them but there
+  # still are a few servers in the pipeline that will need SMBIOS and BMC FRU
+  # information restored to "normal" (vs our "custom part number").
+  - block:
+    - name: Create tempdir for Supermicro files
+      tempfile:
+        state: directory
+        suffix: supermicro
+      register: supermicro_dir
+
+    - name: Set expected system-product-name fact
+      set_fact:
+        expected_system_product_name: "{{ dmi_fixup['Supermicro'][ansible_product_name]['expected_system_product_name'] }}"
+
+    - name: Download Supermicro ipmicfg util
+      get_url:
+        url: "{{ ipmicfg_tool_url }}"
+        dest: "{{ supermicro_dir.path }}/IPMICFG-Linux.x86_64"
+        checksum: "md5:{{ ipmicfg_tool_md5 }}"
+        mode: 0755
+      register: get_url_status
+      until: get_url_status is succeeded
+      retries: "{{ artifact_retries }}"
+      delay: "{{ artifact_delay }}"
+      vars:
+        ipmicfg_tool_url: "{{ dmi_fixup['Supermicro'][ansible_product_name]['ipmicfg_tool_url'] }}"
+        ipmicfg_tool_md5: "{{ dmi_fixup['Supermicro'][ansible_product_name]['ipmicfg_tool_md5'] }}"
+
+    - name: Fix BMC FRU Product Part Number
+      command: "./IPMICFG-Linux.x86_64 -fru PPM '{{ expected_system_product_name }}'"
+      args:
+        chdir: "{{ supermicro_dir.path }}"
+
+    - name: Download Supermicro sum util
+      get_url:
+        url: "{{ sum_tool_url }}"
+        dest: "{{ supermicro_dir.path }}/sum"
+        checksum: "md5:{{ sum_tool_md5 }}"
+        mode: 0755
+      register: get_url_status
+      until: get_url_status is succeeded
+      retries: "{{ artifact_retries }}"
+      delay: "{{ artifact_delay }}"
+      vars:
+        sum_tool_url: "{{ dmi_fixup['Supermicro'][ansible_product_name]['sum_tool_url'] }}"
+        sum_tool_md5: "{{ dmi_fixup['Supermicro'][ansible_product_name]['sum_tool_md5'] }}"
+
+    - name: Dump current SMBIOS to file
+      command: ./sum -c GetDmiInfo --file smbios.out
+      args:
+        chdir: "{{ supermicro_dir.path }}"
+
+    - name: Edit SMBIOS file with correct product name
+      command: "./sum -c EditDmiInfo --shn SYPD --file smbios.out --value '{{ expected_system_product_name }}'"
+      args:
+        chdir: "{{ supermicro_dir.path }}"
+
+    - name: Load updated SMBIOS file
+      command: ./sum -c ChangeDmiInfo --file smbios.out
+      args:
+        chdir: "{{ supermicro_dir.path }}"
+      notify: "reboot server"
+
+    # Update AWX facts rather than rebooting
+    - name: Set missing ansible_product_name for Supermicro chassis globally
+      set_stats:
+        data:
+          ansible_product_name: "{{ expected_system_product_name }}"
+
+    - name: Clean up Supermicro files
+      file:
+        path: "{{ supermicro_dir.path }}"
+        state: absent
+
+    # Override DMI info for product_name via bind mount to /sys in order to
+    # provide updated DMI info for subsequent ansible playbooks for live image
+    # only.
+    - block:
+      - name: Create file with updated product_name
+        copy:
+          content: "{{ expected_system_product_name }}\n"
+          dest: /tmp/product_name
+
+      - name: Create /sys bindmount for product_name
+        mount:
+          path: /sys/class/dmi/id/product_name
+          src: /tmp/product_name
+          opts: bind
+          state: mounted
+          fstype: none
+        become: true
+      when:
+        - "'live' in ansible_hostname"
+
+    # Update Ansible facts rather than rebooting
+    # Note that this task is at the end of the block in order to avoid later
+    # tasks being skipped due to the "new" ansible_product_name no longer being
+    # present in the dmi_fixup dictionary.
+    - name: Update ansible fact
+      set_fact:
+        ansible_product_name: "{{ expected_system_product_name }}"
+
+    when:
+      - ansible_system_vendor == 'Supermicro'
+      - ansible_product_name in dmi_fixup['Supermicro']
+
+  become: yes
+  when: not ansible_check_mode

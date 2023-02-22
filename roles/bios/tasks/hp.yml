@@ -1,0 +1,70 @@
+---
+# Mildly horrible method to avoid the inconsistent prepend of "v" on some HP version numbers
+# so we can keep everything bare numbers in the defaults file
+# Sample output: "Version": "U46 v1.54 (01/05/2999)"
+# Version: U46 (pulled as a host fact by Ansible)
+# Revision: 1.54
+# We are overriding the fact pulled "revision" in place of the RF inventory "version" to standardize formats of "X.YY"
+- name: Set Installed BIOS Version
+  set_fact:
+    ansible_bios_version: "{{ (redfish_fw_inventory['redfish_facts']['firmware']['entries'] | selectattr('Name', '==', 'System ROM')
+                                                                                            | list
+                                                                                            | first)['Version'].split(' ')[1][1:] }}"
+
+- block:
+  - name: Install HP BIOS update package deps
+    package:
+      name: "{{ item }}"
+      state: present
+    with_items:
+      - rpm2cpio
+
+  - name: Create HPE BIOS upgrade directory
+    file:
+      path: /tmp/bios
+      state: directory
+      mode: '0755'
+
+  - name: Grab HPE BIOS bin
+    get_url:
+      url: "{{ bios_url }}"
+      dest: /tmp/bios/bios.rpm
+      mode: "0755"
+      timeout: "240"
+      checksum: "md5:{{ bios_md5 }}"
+    register: get_url_status
+    until: get_url_status is succeeded
+    retries: "{{ artifact_retries }}"
+    delay: "{{ artifact_delay }}"
+
+  # Unfortunately HP updates are packaged...poorly
+  - name: Extract HPE BIOS update rpm
+    shell: rpm2cpio /tmp/bios/bios.rpm | cpio -idmv
+    args:
+      chdir: /tmp/bios
+
+  # This assumes that the name of the rpm / cpio contents are named consistently
+  - name: Derive HPE BIOS directory name
+    set_fact:
+      hp_package_dir: "{{ bios_url | urlsplit('path')
+                                   | basename
+                                   | regex_replace('.x86_64.rpm|.i386.rpm') }}"
+      hp_package_arch: "{{ bios_url | urlsplit('path')
+                                    | basename
+                                    | regex_replace('(.+?)(x86_64|i386)(\\.rpm)$', '\\2') }}"
+
+  - name: Upgrade/downgrade HPE BIOS
+    command: ./hpsetup -s -g
+    args:
+      chdir: "/tmp/bios/usr/lib/{{ hp_package_arch }}-linux-gnu/{{ hp_package_dir }}"
+    register: bios_upg
+    failed_when: bios_upg.rc != 1 # 1 == Upgrade succeeded
+    notify: "reboot server"
+
+  - name: Clean up HPE BIOS bin
+    file:
+      path: /tmp/bios/
+      state: absent
+
+  become: yes
+  when: ansible_bios_version is version(expected_bios_version, '!=')

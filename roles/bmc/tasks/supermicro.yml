@@ -1,0 +1,121 @@
+---
+- name: Set BMC version facts
+  set_fact:
+    ansible_bmc_version: "{{ (redfish_fw_inventory['redfish_facts']['firmware']['entries'] | selectattr('Id', '==', 'BMC')
+                                                                                           | list
+                                                                                           | first)['Version'] }}"
+
+- block:
+  # Hack to spin up fans on SYS-120C-TN10R running bad BMC FW
+  - block:
+    - name: Spin up SMC fans
+      uri:
+        url: "https://{{ bmc_address }}/{{ redfish_uri }}"
+        user: "{{ bmc_username }}"
+        method: PATCH
+        password: "{{ bmc_password }}"
+        validate_certs: no
+        force_basic_auth: yes
+        headers:
+          accept: 'application/json'
+          OData-Version: '4.0'
+        body:
+          Mode: "FullSpeed"
+        body_format: json
+      delay: "{{ default_uri_delay }}"
+      retries: "{{ default_uri_retries }}"
+      register: bmc_fan_spinup
+      changed_when: bmc_fan_spinup.status == 200
+      vars:
+        redfish_uri: "redfish/v1/Managers/1/Oem/Supermicro/FanMode"
+
+    - name: Pause to let fans spin up
+      pause:
+        seconds: 60
+    when:
+      - ansible_product_name == 'SYS-120C-TN10R'
+      - ansible_bmc_version is version("01.00.16", "<=")
+
+  - name: Create tempdir for Supermicro files
+    tempfile:
+      state: directory
+      suffix: supermicro
+    register: supermicro_dir
+
+  # Supermicro BMC updates require the "sum" tool.
+  - name: Download sum tool
+    get_url:
+      url: "{{ bmc_firmware[ansible_system_vendor][ansible_product_name]['sum_tool_url'] }}"
+      dest: "{{ supermicro_dir.path }}/sum"
+      checksum: "md5:{{ bmc_firmware[ansible_system_vendor][ansible_product_name]['sum_tool_md5'] }}"
+      mode: 0755
+    register: get_url_status
+    until: get_url_status is succeeded
+    retries: "{{ artifact_retries }}"
+    delay: "{{ artifact_delay }}"
+
+  - name: Download Supermicro BMC bin
+    get_url:
+      url: "{{ bmc_url }}"
+      dest: "{{ supermicro_dir.path }}/bmc.bin"
+      checksum: "md5:{{ bmc_md5 }}"
+    register: get_url_status
+    until: get_url_status is succeeded
+    retries: "{{ artifact_retries }}"
+    delay: "{{ artifact_delay }}"
+
+  # This update can take a very long time, like ~20 minutes.
+  # Go grab a coffee or three.
+  - name: Upgrade/downgrade Supermicro BMC
+    command: "./sum -i {{ bmc_address }} -u {{ bmc_username }} -p {{ bmc_password }} -c UpdateBmc --file bmc.bin"
+    args:
+      chdir: "{{ supermicro_dir.path }}"
+
+  # SUM will return a 'successful' FW update, however, the BMC may not be fully
+  # online. Pause for 5 minutes to wait for the BMC to start
+  - name: Pause to allow for update to complete and BMC to restart
+    pause:
+      seconds: 300
+
+  - name: Clean up Supermicro files
+    file:
+      path: "{{ supermicro_dir.path }}"
+      state: absent
+
+  # Hack to spin up fans on SYS-120C-TN10R running bad BMC FW
+  - block:
+    - name: Spin down SMC fans
+      uri:
+        url: "https://{{ bmc_address }}/{{ redfish_uri }}"
+        user: "{{ bmc_username }}"
+        method: PATCH
+        password: "{{ bmc_password }}"
+        validate_certs: no
+        force_basic_auth: yes
+        headers:
+          accept: 'application/json'
+          OData-Version: '4.0'
+        body:
+          Mode: "Standard"
+        body_format: json
+      delay: "{{ default_uri_delay }}"
+      retries: "{{ default_uri_retries }}"
+      vars:
+        redfish_uri: "redfish/v1/Managers/1/Oem/Supermicro/FanMode"
+      register: bmc_fan_spindown
+      changed_when: bmc_fan_spindown.status == 200
+    when:
+      - bmc_fan_spinup is defined
+      - bmc_fan_spinup is changed
+
+  - name: Re-run Redfish Inventory
+    include_role:
+      name: bmc_config
+      tasks_from: rf_inventory
+
+  become: yes
+  when:
+    - expected_bmc_version is defined
+    - ansible_bmc_version is defined
+    - ansible_bmc_version is version(expected_bmc_version, '!=')
+    - not ansible_check_mode

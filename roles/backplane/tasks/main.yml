@@ -1,0 +1,14 @@
+---
+- block:
+  - name: Include backplane FW update tasks
+    include_tasks: "{{ backplane_firmware[ansible_system_vendor]['backplane_update_task'] }}"
+  when:
+    - ansible_system_vendor in backplane_firmware
+    - ansible_product_name in backplane_firmware[ansible_system_vendor]
+
+- name: Backplane Firmware Version Check
+  set_fact:
+    fw_check: "{{ fw_check | default([]) }} + ['Backplane (Actual/Expected): {{ backplane_firmware_version }}/{{ backplane_firmware_expected_version }}']"
+  when:
+    - backplane_firmware_version is defined
+    - ansible_check_mode

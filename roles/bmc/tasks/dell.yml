@@ -1,0 +1,47 @@
+---
+- name: Set Installed BMC version
+  set_fact:
+    ansible_bmc_version: "{{ (redfish_fw_inventory['redfish_facts']['firmware']['entries'] | selectattr('Name', 'search', 'Integrated Dell Remote Access Controller|Integrated Remote Access Controller')
+                                                                                           | selectattr('Id', 'search', 'Current|Installed')
+                                                                                           | list
+                                                                                           | first)['Version'] }}"
+
+- block:
+  - name: Grab Dell BMC bin
+    get_url:
+      url: "{{ bmc_url }}"
+      dest: /tmp/idrac.bin
+      mode: "0766"
+      timeout: "240"
+      checksum: "md5:{{ bmc_md5 }}"
+    register: get_url_status
+    until: get_url_status is succeeded
+    retries: "{{ artifact_retries }}"
+    delay: "{{ artifact_delay }}"
+
+  - name: Upgrade/downgrade Dell BMC
+    command: "/tmp/idrac.bin -q -f"
+
+  - name: Clean up Dell BMC bin
+    file:
+      path: /tmp/idrac.bin
+      state: absent
+
+  # Certain firmware (CPLD) will not report in Firmware Inventory immediately
+  # after the BMC FW update. To address that, add a slight pause.
+  # TODO: Remove this hack once we no longer need the second FW Inv collection
+  - name: Pause to allow iDRAC to complete Firmware Inventory updates
+    pause:
+      seconds: 300
+
+  - name: Re-run Redfish Inventory
+    include_role:
+      name: bmc_config
+      tasks_from: rf_inventory
+
+  become: yes
+  when:
+    - expected_bmc_version is defined
+    - ansible_bmc_version is defined
+    - ansible_bmc_version is version(expected_bmc_version, '!=')
+    - not ansible_check_mode

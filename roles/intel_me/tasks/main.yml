@@ -1,0 +1,39 @@
+---
+- block:
+  # Note: If we start tracking other ME components we need to set their expected
+  # versions/locations as facts here
+  - name: Set Expected Intel ME subsystem firmware versions/locations as facts
+    set_fact:
+      intel_ie: "{{ intel_me_firmware[ansible_system_vendor][ansible_product_name]['intel_me_ie'] }}"
+      intel_sps: "{{ intel_me_firmware[ansible_system_vendor][ansible_product_name]['intel_me_sps'] }}"
+      intel_me_ie_expected_version: "{{ intel_me_firmware[ansible_system_vendor][ansible_product_name]['intel_me_ie']['expected_version'] }}"
+      intel_me_sps_expected_version: "{{ intel_me_firmware[ansible_system_vendor][ansible_product_name]['intel_me_sps']['expected_version'] }}"
+    when:
+      - ansible_system_vendor in intel_me_firmware
+      - ansible_product_name in intel_me_firmware[ansible_system_vendor]
+
+  # Note: Regarding IE and SPS depenancies, it is up to us (the maintainers), to
+  # ensure that any BIOS/IE/SPS depenancies are addressed in their respective
+  # default files. I.e. if IE (heh pun intended) or SPS depend on each other,
+  # you must update fw_up to incorperate those required versions.
+  - name: Include vendor Intel ME update tasks
+    include_tasks: "{{ intel_me_firmware[ansible_system_vendor]['intel_me_update_task'] }}"
+    when:
+      - ansible_system_vendor in intel_me_firmware
+      - ansible_product_name in intel_me_firmware[ansible_system_vendor]
+
+- name: Intel ME (IE) Firmware Check
+  set_fact:
+    fw_check: "{{ fw_check | default([]) }} + ['Intel ME(IE) (Actual/Expected): {{ intel_me_ie_firmware_version }}/{{ intel_me_ie_expected_version }}']"
+  when:
+    - intel_me_ie_firmware_version is defined
+    - intel_me_ie_expected_version is defined
+    - ansible_check_mode
+
+- name: Intel ME (SPS) Firmware Check
+  set_fact:
+    fw_check: "{{ fw_check | default([]) }} + ['Intel ME(SPS) (Actual/Expected): {{ intel_me_sps_firmware_version }}/{{ intel_me_sps_expected_version }}']"
+  when:
+    - intel_me_sps_firmware_version is defined
+    - intel_me_sps_expected_version is defined
+    - ansible_check_mode

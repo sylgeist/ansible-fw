@@ -1,0 +1,82 @@
+---
+- block:
+  - name: Capture HBA information
+    command: "storcli64 -AdpAllInfo -aALL"
+    register: storcli_out
+    changed_when: False
+    check_mode: False
+    environment:
+      PATH: "{{ ansible_env.PATH }}:/opt/MegaRAID/storcli"
+
+  - name: Identify Supermicro HBAs and firmware levels
+    set_fact:
+      sm_hbas: "{{ sm_hbas | default([]) }} + ['{{ item.0 }}']"
+      sm_hba_firmwares: "{{ sm_hba_firmwares | default([]) }} + ['{{ item.1 }}']"
+    with_together:
+      - "{{ storcli_out.stdout | regex_findall('(?:Product Name)(?:\\s*:\\s*)(.*)') }}"
+      - "{{ storcli_out.stdout | regex_findall('(?:FW Package Build)(?:\\s*:\\s*)(.*)') }}"
+
+  - name: Determine which Supermicro HBAs need updates and location of update files
+    set_fact:
+      needs_update: "{{ needs_update | default([]) }} + [{{ item.1 is version(hba_firmware.supermicro_hba[item.0].hba_expected_version, '!=') }}]"
+      sm_update_files: "{{ sm_update_files | default([]) }} + ['{{ hba_firmware.supermicro_hba[item.0].hba_url | urlsplit('path') | basename }}']"
+    with_together:
+      - "{{ sm_hbas }}"
+      - "{{ sm_hba_firmwares }}"
+
+  - name: Assemble Supermicro HBA data structure
+    set_fact:
+      hba_data: >-
+        {{ hba_data | default([]) | union([{
+          'hba': item.0,
+          'fw': item.1,
+          'needs_update': item.2,
+          'file': item.3
+        }]) }}
+    with_together:
+      - "{{ sm_hbas }}"
+      - "{{ sm_hba_firmwares }}"
+      - "{{ needs_update }}"
+      - "{{ sm_update_files }}"
+
+  become: yes
+
+- block:
+  - name: Download the Supermicro HBA upgrade
+    get_url:
+      url: "{{ hba_firmware.supermicro_hba[item.hba].hba_url }}"
+      dest: "/tmp/{{ item.file }}"
+      mode: "0755"
+      timeout: "240"
+      checksum: "md5:{{ hba_firmware.supermicro_hba[item.hba].hba_md5 }}"
+    register: get_url_status
+    until: get_url_status is succeeded
+    retries: "{{ artifact_retries }}"
+    delay: "{{ artifact_delay }}"
+    with_items: "{{ hba_data }}"
+    when: item.needs_update
+
+  - name: Upgrade/downgrade Supermicro HBA
+    command: "storcli64 -adpFwFlash -f /tmp/{{ item.file }} -a{{ hba_index }}"
+    when: item.needs_update
+    with_items: "{{ hba_data }}"
+    loop_control:
+      index_var: hba_index
+    notify: "reboot server"
+
+  - name: Clean up Supermicro HBA bin
+    file:
+      path: "/tmp/{{ item.file }}"
+      state: absent
+    with_items: "{{ hba_data }}"
+
+  become: yes
+  when: not ansible_check_mode
+
+- name: Supermicro HBA Firmware Check
+  set_fact:
+    fw_check: "{{ fw_check | default([]) }} + ['Supermicro HBA (Actual/Expected): {{ item.fw }}/{{ hba_firmware.supermicro_hba[item.hba].hba_expected_version }}']"
+  with_items: "{{ hba_data }}"
+  when:
+    - hba_data is defined
+    - ansible_check_mode

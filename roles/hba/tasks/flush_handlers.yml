@@ -1,0 +1,7 @@
+---
+- block:
+  - name: Flush handlers for HBA FW update
+    meta: flush_handlers
+
+  tags:
+    - hba

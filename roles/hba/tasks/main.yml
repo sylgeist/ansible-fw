@@ -1,0 +1,36 @@
+---
+- block:
+  - name: Identify installed HBAs
+    command: lspci -mn
+    register: lspci_output
+    changed_when: False
+    check_mode: False
+
+  # This is messy, but we are searching for all RAID or SCSI controllers
+  # (PCI device types 0104 and 0107 respectively)
+  # Similar to the nic play, store these PCI IDs in this format:
+  # vendor_id:device_id:subsystem_vendor_id:subsystem_device_id
+  # (code golf challenges are welcome for this)
+  # Also, we now need our slot ID so that we can reset HBAs post FW update.
+  - name: Build hba list
+    set_fact:
+      hbas: "{{ hbas | default([]) | union ([{'slot': item.0, 'pci_id': item.1}]) }}"
+    vars:
+      # This first regex is looking for slot ID of PCI ID type 0107 or 0104
+      # We are excluding the other capture groups
+      hba_slots: "{{ lspci_output.stdout | regex_findall('([a-z0-9]{2}:[a-z0-9]{2}.[0-9]) \"(?:0104|0107)\" \"(?:[a-z0-9]{4})\" \"(?:[a-z0-9]{4})\" -r[0-9]+ \"(?:[a-z0-9]{4})\" \"(?:[a-z0-9]{4})\"') }}"
+      # This second regex is looking for vendor:model:subvendor:submodel
+      # We are excluding the the slot ID and 0104 and 0107
+      hba_pci_ids: "{{ lspci_output.stdout | regex_findall('(?:[a-z0-9]{2}:[a-z0-9]{2}.[0-9]) \"(?:0104|0107)\" \"([a-z0-9]{4})\" \"([a-z0-9]{4})\" -r[0-9]+ \"([a-z0-9]{4})\" \"([a-z0-9]{4})\"') | map('join', ':') | list }}"
+    with_together:
+      - "{{ hba_slots }}"
+      - "{{ hba_pci_ids }}"
+
+  # We can't easily determine HBA firmware version without including HBA specific tasks
+  - include_tasks: "{{ hba_item.key }}.yml"
+    with_dict: "{{ hba_firmware }}"
+    loop_control:
+      loop_var: hba_item
+    when:
+      - hbas is defined
+      - hbas | map(attribute='pci_id') | list | intersect(hba_firmware[hba_item.key] | map('extract', hba_firmware[hba_item.key], 'pci_id')) | length > 0

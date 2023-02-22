@@ -1,0 +1,31 @@
+intel_me_firmware:
+  HPE:
+    intel_me_update_task: hp.yml
+    ProLiant DL360 Gen10:
+      # If any of the ME subsystems have differing minimum bios versions,
+      # define the lastest minimum version, here.
+      intel_me_minimum_bios_version: "1.26"
+      intel_me_ie:
+        description: "intel_me_ie"
+        expected_version: "0.2.2.0"
+        url: "{{ artifact_base_url }}/firmware-iegen10-0.2.2.0-1.1.x86_64.rpm"
+        md5: "7f4ce8705900b8d23408c792fee26bd1"
+      intel_me_sps:
+        description: "intel_me_sps"
+        expected_version: "4.1.4.339"
+        url: "{{ artifact_base_url }}/firmware-spsgen10-04.01.04.339-1.1.x86_64.rpm"
+        md5: "8bd7b1989528596700e8e4470e3a27ae"
+    ProLiant DL360 Gen10 Plus:
+      # If any of the ME subsystems have differing minimum bios versions,
+      # define the lastest minimum version, here.
+      intel_me_minimum_bios_version: "1.40"
+      intel_me_ie:
+        description: "intel_me_ie"
+        expected_version: "1.0.0.22"
+        url: "{{ artifact_base_url }}/firmware-iegen10plus-1.0.0.22-1.1.x86_64.rpm"
+        md5: "67d1298a6ab0302f490e4be78e41fe45"
+      intel_me_sps:
+        description: "intel_me_sps"
+        expected_version: "04.04.04.202"
+        url: "{{ artifact_base_url }}/firmware-spsgen10plus-04.04.04.202-1.1.x86_64.rpm"
+        md5: "3c2ad2485e5ce87445b09363f78a5962"

@@ -1,0 +1,148 @@
+---
+# Nearly all vendors use a virtualized USB nic ("usb0") for RF HI. However,
+# some vendors (Dell) use a different type of RF HI which results in
+# interface names like "idrac".
+- name: Override Redfish Host Interface name for specific server vendors
+  set_fact:
+    bmc_host_interface_name: "{{ bmc_config[ansible_system_vendor]['bmc_host_interface_data']['interface_name'] }}"
+  when:
+    - bmc_config[ansible_system_vendor] is defined
+    - bmc_config[ansible_system_vendor]['bmc_host_interface_data'] is defined
+    - bmc_config[ansible_system_vendor]['bmc_host_interface_data']['interface_name'] is defined
+
+# There are two chassis which don't support RF HI.
+- name: Include vendor specific tasks to enable Redfish Host Interface via in-band
+  include_tasks: enable_host_interface.yml
+  when:
+    - ansible_product_name not in rf_hi_unsupported_list
+    - bmc_host_interface_name not in ansible_interfaces
+    - bmc_config[ansible_system_vendor] is defined
+    - bmc_config[ansible_system_vendor]['bmc_host_interface_data'] is defined
+    - not ansible_check_mode
+  vars:
+    rf_hi_unsupported_list:
+      - AS -2113S-WN24RT
+      - ProLiant DL360 Gen9
+
+- block:
+    - name: Ensure ipmi kmods are present
+      service:
+        name: openipmi
+        state: started
+
+    # Iterate through IPMI channels 1-7 (which are the assigned block for media specific connectivity).
+    - name: Gather all IPMI channel details
+      command: "ipmitool channel info {{ ipmi_channel_number }}"
+      register: ipmi_channel_details
+      loop: "{{ range(1, 7 + 1)|list }}"
+      loop_control:
+        loop_var: ipmi_channel_number
+      failed_when: False
+      changed_when: False
+      until: "'Node busy' not in ipmi_channel_details.stderr"
+      check_mode: False
+
+    - name: Extract the LAN IPMI Channel ID as fact
+      set_fact:
+        ipmi_channel: "{{ ipmi_channel_detail.ipmi_channel_number }}"
+      loop: "{{ ipmi_channel_details.results }}"
+      loop_control:
+        loop_var: ipmi_channel_detail
+      when:
+        - "'802.3 LAN' in ipmi_channel_detail.stdout"
+        - ipmi_channel is undefined
+
+    - name: IPMI LAN Channel status
+      assert:
+        quiet: yes
+        that: ipmi_channel is defined
+        fail_msg: "Cannot determine IPMI LAN channel or out of bounds"
+
+    - name: Gather initial BMC lan information
+      command: ipmitool lan print
+      register: ipmitool_output
+      changed_when: ipmitool_output.rc != 0
+      until: ipmitool_output is successful
+      check_mode: False
+
+    # Use the ipaddr module to filter out legit IP addresses
+    - name: Set BMC IP address as fact
+      set_fact:
+        bmc_address: "{{ ipmitool_output.stdout | regex_search('IP Address\\s+:\\s+(.+)','\\1') | first }}"
+        bmc_address_source: "{{ ipmitool_output.stdout | regex_search('(IP Address Source\\s+:\\s+(.+) Address)', '\\2') | first  }}"
+
+    # We are also going to try to zap the BMC if we have a quad 0 IP address
+    - name: Force BMC IP address source to DHCP
+      include_tasks: set_bmc_to_dhcp.yml
+      when:
+        - (bmc_address_source == 'Static' or bmc_address == "0.0.0.0")
+        - not ansible_check_mode
+
+    # At this stage we should have a valid IP either from forcing DHCP or already available
+    - name: Check to see if the IP address is valid and DHCP was set
+      assert:
+        quiet: yes
+        that:
+          - bmc_address_source == 'DHCP'
+          - bmc_address | ansible.utils.ipaddr('private')
+        fail_msg: "Invalid or missing BMC address"
+
+    - name: Set global facts for AWX consumption
+      set_stats:
+        data:
+          bmc_address: "{{ bmc_address }}"
+
+    # Check for hardware that is out of support in FWU due to missing features
+    # Please check: wiki/Deprecations"
+    - name: Check for deprecated hardware models
+      meta: end_host
+      when: ansible_product_name in ('ProLiant DL360 Gen9', 'PowerEdge R620')
+
+  become: yes
+
+- name: Set up IPMI/RF users
+  include_tasks: setup_ipmi_rf_users.yml
+  when: not ansible_check_mode
+
+- name: Set BMC hostname
+  community.general.redfish_config:
+    category: Manager
+    command: SetManagerNic
+    nic_config:
+      HostName: "bmc-{{ ansible_product_serial }}"
+    baseuri: "{{ bmc_address }}"
+    username: "{{ bmc_username }}"
+    password: "{{ bmc_password }}"
+    timeout: "{{ default_uri_timeout }}"
+  register: set_bmc_hostname
+  until: set_bmc_hostname is successful
+  delay: "{{ default_uri_delay }}"
+  retries: "{{ default_uri_retries }}"
+  when: not ansible_check_mode
+
+- name: Enable Remote IPMI over LAN
+  community.general.redfish_config:
+    category: Manager
+    command: SetNetworkProtocols
+    network_protocols:
+      IPMI:
+        ProtocolEnabled: True
+    baseuri: "{{ bmc_address }}"
+    username: "{{ bmc_username }}"
+    password: "{{ bmc_password }}"
+    timeout: "{{ default_uri_timeout }}"
+  register: enable_ipmi_lan
+  until: enable_ipmi_lan is successful
+  delay: "{{ default_uri_delay }}"
+  retries: "{{ default_uri_retries }}"
+  when: not ansible_check_mode
+
+- name: Include Vendor BMC Config Task
+  include_tasks: "{{ bmc_config[ansible_system_vendor]['bmc_config_task'] }}"
+  when:
+    - bmc_config[ansible_system_vendor] is defined
+    - "'bmc_config_task' in bmc_config[ansible_system_vendor]"
+    - not ansible_check_mode
+
+- name: Include Redfish Inventory Task
+  include_tasks: rf_inventory.yml

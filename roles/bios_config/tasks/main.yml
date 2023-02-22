@@ -1,0 +1,100 @@
+---
+- block:
+  # We need to flush any reboot handlers prior to making config changes
+  - name: Force reboot handlers prior to config changes
+    meta: flush_handlers
+
+  # Let's first see what we are running
+  # (sidenote: this API endpoint can timeout or fail randomly
+  # because of that, let's retry a few times)
+  # (other sidenote: we started encountering a scenario where iDRACs returned
+  # garbage or missing data. In this case we are going to check the returned
+  # data from the iDRAC and verify it looks reasonably sane. In this case we
+  # define reasonably sane as "having some elements in the bios_attribute dict
+  - name: Capture current BIOS settings
+    community.general.redfish_info:
+      command: GetBiosAttributes
+      baseuri: "{{ bmc_address }}"
+      username: "{{ bmc_username }}"
+      password: "{{ bmc_password }}"
+      timeout: "{{ default_uri_timeout }}"
+    register: redfish_results
+    delay: "{{ default_uri_delay }}"
+    retries: "{{ default_uri_retries }}"
+    until: redfish_results is succeeded
+
+  - name: BIOS settings captured
+    assert:
+      that:
+        - redfish_results.redfish_facts is defined
+        - redfish_results.redfish_facts.bios_attribute is defined
+        - redfish_results.redfish_facts.bios_attribute.entries is defined
+        - redfish_results.redfish_facts.bios_attribute.entries.0 | default([]) | length >= 2
+      msg: "BIOS: Could not capture current BIOS settings"
+
+  - name: Include BIOS configuration tasks
+    include_tasks:  "{{ bios_config[ansible_system_vendor]['bios_config_task'] }}"
+    when:
+      - ansible_system_vendor in bios_config
+      - ansible_product_name in bios_config[ansible_system_vendor]
+      - "'bios_attrs' in bios_config[ansible_system_vendor][ansible_product_name]"
+
+  # Apply hardware vendor generic redfish config items
+  # (but only do it if we aren't flipping between UEFI <-> BIOS)
+  # (also skip this if we are running on a DL360 Gen9...because no redfish)
+  - name: Configure BIOS Settings
+    community.general.redfish_config:
+      category: Systems
+      command: SetBiosAttributes
+      bios_attributes: "{{ bios_config[ansible_system_vendor][ansible_product_name]['bios_attrs'] }}"
+      baseuri: "{{ bmc_address }}"
+      username: "{{ bmc_username }}"
+      password: "{{ bmc_password }}"
+      timeout: "{{ default_uri_timeout }}"
+    delay: "{{ default_uri_delay }}"
+    retries: "{{ default_uri_retries }}"
+    register: redfish_bios_changes
+    notify:
+      - "update bios config on reboot"
+      - "reboot server"
+
+  # In the event we receive a "warning" / "Incorrect attributes", reboot server
+  # in order to expose parent <-> child BIOS attr dependencies. Note that
+  # 'warnings' from SetBiosAttributes is a list of strings. To determine if a
+  # parent <-> child BIOS attr relationship is present, search for
+  # 'Incorrect attributes' in all elements in the list.
+  - block:
+    # Manually reboot. Condtionally flushing handlers is still 'iffy', to
+    # address that, simply run a reboot 'right now'.
+    - name: Reboot the server to expose dependent BIOS attrs
+      reboot:
+        reboot_timeout: "{{ reboot_timeout }}"
+      become: yes
+      when: not skip_reboot | default(False) | bool
+
+    # Re-run SetBiosAttributes now that BIOS attr pre-reqs have been configured
+    - name: Configure BIOS Settings (again)
+      community.general.redfish_config:
+        category: Systems
+        command: SetBiosAttributes
+        bios_attributes: "{{ bios_config[ansible_system_vendor][ansible_product_name]['bios_attrs'] }}"
+        baseuri: "{{ bmc_address }}"
+        username: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        timeout: "{{ default_uri_timeout }}"
+      delay: "{{ default_uri_delay }}"
+      retries: "{{ default_uri_retries }}"
+      register: redfish_bios_changes
+      notify:
+        - "update bios config on reboot"
+        - "reboot server"
+    when:
+      - redfish_bios_changes is defined
+      - redfish_bios_changes is changed
+      - redfish_bios_changes.warnings is defined
+      - redfish_bios_changes.warnings | select('search', 'Incorrect attributes') | length > 0
+
+  when: 
+    - not ansible_check_mode
+    - bios_config[ansible_system_vendor] is defined
+    - bios_config[ansible_system_vendor][ansible_product_name] is defined

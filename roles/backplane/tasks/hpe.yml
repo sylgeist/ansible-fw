@@ -1,0 +1,87 @@
+---
+# Note that we make some assumptions about duplicate backplanes. The XL420
+# has two identically named backplanes. For the sake of this FW update we
+# assume that both backplanes are running the same FW version.
+- name: Identify backplane model
+  set_fact:
+    backplane_models: "{{ firmware_inventory_models | intersect(supported_backplane_models) }}"
+
+  vars:
+    supported_backplane_models: "{{ backplane_firmware[ansible_system_vendor][ansible_product_name].keys() | list }}"
+    firmware_inventory_models: "{{ redfish_fw_inventory['redfish_facts']['firmware']['entries'] | map(attribute='Name')
+                                                                  | list
+                                                                  | unique }}"
+
+- name: Set backplane firmware information
+  set_fact:
+    backplane_model: "{{ backplane_models | first }}"
+    backplane_firmware_expected_version: "{{ backplane_firmware[ansible_system_vendor][ansible_product_name][backplane_model]['backplane_expected_version'] }}"
+    backplane_firmware_version: "{{ (redfish_fw_inventory['redfish_facts']['firmware']['entries'] | selectattr('Name', 'match', backplane_model)
+                                                                    | list
+                                                                    | first)['Version'] }}"
+  vars:
+    backplane_model: "{{ backplane_models | first }}"
+  when:
+    - backplane_models | length > 0
+
+- block:
+  - name: Create HPE backplane upgrade directory
+    tempfile:
+      state: directory
+      suffix: hpe_backplane
+    register: hpe_backplane_update_temp
+
+  - name: Set HPE backplane update directory fact
+    set_fact:
+      backplane_update_dir: "{{ hpe_backplane_update_temp.path }}"
+
+  - name: Grab HPE Backplane rpm
+    get_url:
+      url: "{{ backplane_url }}"
+      dest: "{{ backplane_update_dir }}/backplane.rpm"
+      mode: "0755"
+      timeout: "240"
+      checksum: "md5:{{ backplane_md5 }}"
+    register: get_url_status
+    until: get_url_status is succeeded
+    retries: "{{ artifact_retries }}"
+    delay: "{{ artifact_delay }}"
+    vars:
+      backplane_url: "{{ backplane_firmware[ansible_system_vendor][ansible_product_name][backplane_model]['backplane_url'] }}"
+      backplane_md5: "{{ backplane_firmware[ansible_system_vendor][ansible_product_name][backplane_model]['backplane_md5'] }}"
+
+  - name: Extract HPE Backplane update rpm
+    shell: rpm2cpio {{ backplane_update_dir }}/backplane.rpm | cpio -idmv
+    args:
+      chdir: "{{ backplane_update_dir }}"
+
+  - name: Derive HPE Backplane directory name
+    set_fact:
+      hp_package_dir: "{{ backplane_url | urlsplit('path')
+                                        | basename
+                                        | regex_replace('.x86_64.rpm|.i386.rpm') }}"
+      hp_package_arch: "{{ backplane_url | urlsplit('path')
+                                         | basename
+                                         | regex_replace('(.+?)(x86_64|i386)(\\.rpm)$', '\\2') }}"
+    vars:
+      backplane_url: "{{ backplane_firmware[ansible_system_vendor][ansible_product_name][backplane_model]['backplane_url'] }}"
+
+  # A successful FW update should be RC = 1.
+  # However, during testing I hit RC = 0.
+  - name: Upgrade/downgrade HPE Backplane
+    command: ./hpsetup -s -g
+    args:
+      chdir: "{{ backplane_update_dir }}/usr/lib/{{ hp_package_arch }}-linux-gnu/{{ hp_package_dir }}"
+    register: backplane_upg
+    failed_when: (backplane_upg.rc != 1 and backplane_upg.rc != 0)
+    notify: "reboot server"
+
+  - name: Clean up HPE backplane FW update
+    file:
+      path: "{{ backplane_update_dir }}"
+      state: absent
+  become: yes
+  when:
+    - backplane_firmware_version is defined
+    - backplane_firmware_version is version(backplane_firmware_expected_version, '!=')
+    - not ansible_check_mode

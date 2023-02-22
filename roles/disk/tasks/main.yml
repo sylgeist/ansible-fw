@@ -1,0 +1,46 @@
+---
+- block:
+    - name: Capture list of drives from smartctl scan
+      # JIRA-1234 trim SCSI errors from smartctl output
+      shell: smartctl --scan-open | grep -v ^#
+      register: smartctl_scan_output
+      check_mode: False
+      changed_when: false
+
+    # Note that this regex is a bit messy but it needs to handle strange stuff like:
+    # /dev/bus/0 -d sat+megaraid,8 # /dev/bus/0 [megaraid_disk_08] [SAT], ATA device
+    # /dev/sda -d sat # /dev/sda [SAT], ATA device
+    # /dev/nvme0 -d nvme # /dev/nvme0, NVMe device
+    #
+    # regex improvements are welcome.
+    - name: Identify drives
+      set_fact:
+        drive_list: "{{ drive_list | default([]) + [{'drive': drive_data[0],
+          'driver': drive_data[1],
+          'drive_index': drive_data[2]}] }}"
+      with_items: "{{ smartctl_scan_output.stdout_lines }}"
+      loop_control:
+        loop_var: drive_item
+      vars:
+        drive_data: "{{ drive_item | regex_search('^(.+) -d ([a-z]+\\+?[a-z]+)[,]?([0-9]*)', '\\1', '\\2', '\\3') }}"
+
+    # Include tasks based on smartctl driver name
+    # Note that this could be a PITA because tasks will be named things like
+    # - sat.yml (not really intuitive)
+    # - nvme.yml
+    # - sat+megaraid.yml (bleh)
+    # - sat+cciss.yml (bleh again)
+    # However, this simplifies the creation of adding support for additional
+    # drivers in the future.
+    - name: Include driver specific firmware updates
+      include_tasks: "{{ driver_item }}.yml"
+      with_items: "{{ drivers }}"
+      when: drive_list is defined
+      vars:
+        drivers: "{{ drive_list | map(attribute='driver')
+          | list
+          | unique }}"
+      loop_control:
+        loop_var: driver_item
+
+  become: yes

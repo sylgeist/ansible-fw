@@ -1,0 +1,77 @@
+---
+- name: Determine BIOS version for Supermicro servers
+  set_fact:
+    ansible_bios_version: "{{ (redfish_fw_inventory['redfish_facts']['firmware']['entries'] | selectattr('Id', '==', 'BIOS')
+                                                                                            | list
+                                                                                            | first)['Version'].split(' ') | last }}"
+
+- block:
+  # Newer versions of Supermicro BIOS updates require the server to be powered
+  # off. We will use the sum + OOB access to perform the update but all tasks
+  # will be delegated to localhost. Because the sum util will perform the
+  # reboot we will _not_ use the reboot handler.
+  - name: Create tempdir for Supermicro files
+    tempfile:
+      state: directory
+      suffix: supermicro
+    register: supermicro_dir
+    delegate_to: 127.0.0.1
+
+  # Supermicro BIOS updates require the "sum" tool.
+  - name: Download sum tool
+    get_url:
+      url: "{{ system_firmware[ansible_system_vendor][ansible_product_name]['sum_tool_url'] }}"
+      dest: "{{ supermicro_dir.path }}/sum"
+      checksum: "md5:{{ system_firmware[ansible_system_vendor][ansible_product_name]['sum_tool_md5'] }}"
+      mode: 0755
+    register: get_url_status
+    until: get_url_status is succeeded
+    retries: "{{ artifact_retries }}"
+    delay: "{{ artifact_delay }}"
+    delegate_to: 127.0.0.1
+
+  # Certain BIOS updates for H12/X12 (and newer) may contain a security
+  # revision which requires an explicit sum CLI arg to ack that the update
+  # cannot be rolled back. Define the 'normal' sum command to update BIOS and
+  # conditionally append the arg to ack the security revision based on the
+  # presence of the 'contains_security_revision' key in the system_firmware
+  # dictionary.
+  - name: Define Supermicro BIOS update command
+    set_fact:
+      smc_bios_update_cmd: "./sum -i {{ bmc_address }} -u {{ bmc_username }} -p {{ bmc_password }} -c UpdateBios --file bios.bin --preserve_setting --reboot"
+
+  - name: Conditionally ack security revision update
+    set_fact:
+      smc_bios_update_cmd: "{{ smc_bios_update_cmd }} --forward"
+    when:
+      - system_firmware[ansible_system_vendor][ansible_product_name]['contains_security_revision'] | default(False)
+
+  - name: Download Supermicro BIOS bin
+    get_url:
+      url: "{{ bios_url }}"
+      dest: "{{ supermicro_dir.path }}/bios.bin"
+      checksum: "md5:{{ bios_md5 }}"
+    register: get_url_status
+    until: get_url_status is succeeded
+    retries: "{{ artifact_retries }}"
+    delay: "{{ artifact_delay }}"
+    delegate_to: 127.0.0.1
+
+  - name: Upgrade/downgrade Supermicro BIOS
+    command: "{{ smc_bios_update_cmd }}"
+    args:
+      chdir: "{{ supermicro_dir.path }}"
+    no_log: yes
+    delegate_to: 127.0.0.1
+
+  - name: Verify node reboots
+    wait_for_connection:
+      timeout: "{{ reboot_timeout }}"
+
+  - name: Clean up Supermicro files
+    file:
+      path: "{{ supermicro_dir.path }}"
+      state: absent
+    delegate_to: 127.0.0.1
+
+  when: ansible_bios_version is version(expected_bios_version, '!=')

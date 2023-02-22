@@ -1,0 +1,7 @@
+---
+skip_list:
+  - 204  # long lines check, buy a bigger monitor or come ⛳ this repo.
+  - 701  # missing galaxy_info for meta files
+  - metadata
+exclude_paths:
+  - .github/

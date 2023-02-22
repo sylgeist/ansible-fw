@@ -1,0 +1,21 @@
+---
+- block:
+  - name: Set BIOS Facts
+    set_fact:
+      bios_url: "{{ system_firmware[ansible_system_vendor][ansible_product_name]['bios_url'] }}"
+      bios_md5: "{{ system_firmware[ansible_system_vendor][ansible_product_name]['bios_md5'] }}"
+      expected_bios_version: "{{ system_firmware[ansible_system_vendor][ansible_product_name]['bios_expected_version'] }}"
+
+  - name: Include BIOS update task
+    include_tasks: "{{ system_firmware[ansible_system_vendor]['bios_update_task'] }}"
+
+  when:
+    - ansible_system_vendor in system_firmware
+    - ansible_product_name in system_firmware[ansible_system_vendor]
+
+- name: BIOS Firmware Version Check
+  set_fact:
+    fw_check: "{{ fw_check | default([]) }} + ['BIOS (Actual/Expected): {{ ansible_bios_version }}/{{ expected_bios_version }}']"
+  when:
+    - ansible_bios_version is defined
+    - ansible_check_mode

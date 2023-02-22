@@ -1,0 +1,7 @@
+.idea/*
+venv/
+site.retry
+hosts
+.vscode
+.nova
+.DS_store

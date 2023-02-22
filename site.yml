@@ -1,0 +1,167 @@
+---
+- hosts: "{{ safe_hosts|default(ansible_limit)|default(omit) }}"
+  gather_facts: false
+  vars:
+    ca: "{{ playbook_dir ~ '/CAfile.pem' }}"
+    vault_url: https://vault:8200
+  pre_tasks:
+    - name: Check for ansible valid version
+      fail:
+        msg: "You must run ansible version >= 2.10.5"
+      when: ansible_version.full is version('2.10.4', '<=')
+      tags: always
+
+    - name: Check for valid Turtle Vault token
+      fail:
+        msg: "Error, unable to access Turtle Vault. Maybe verify your vault token is fresh?"
+      when: test_vault_lookup | length == 0
+      vars:
+        test_vault_lookup: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=secret/platform/ipmi/password:root cacert={{ ca }} url={{ vault_url }}', errors='warn') }}"
+      tags: always
+
+    - block:
+        - name: Confirm that rebooting is OK
+          pause:
+            prompt: "This will cause target hosts(s) to reboot, are you sure you want to proceed? [yes/no]"
+          register: reboot_input
+
+        - name: Bail out if rebooting isn't OK
+          fail:
+            msg: "Exiting beacuse we don't want to reboot..."
+          when: not reboot_input.user_input | bool
+
+      when:
+        - not force_reboot | default(False) | bool
+        - not skip_reboot | default(False) | bool
+        - not ansible_check_mode
+
+      delegate_to: localhost
+      run_once: yes
+      tags: always
+
+    - block:
+        - name: Determine region via DNS
+          shell: dig +short +search TXT region | tr -d '"'
+          register: dig
+          changed_when: false
+          check_mode: False
+
+        - name: set_fact region for multi-host runs
+          set_fact:
+            region: "{{ dig.stdout }}"
+      tags: always
+
+    # Fun fact: gather_facts: True won't properly capture the correct value of
+    # ansible_product_serial because this requires root permissions. Instead of
+    # a valid system-serial-number, ansible will report "NA". In order to work
+    # around this, we can set gather_facts: false and manually run 'setup' with
+    # elevated permissions:
+    - name: Gather facts as root
+      setup:
+      become: yes
+      tags: always
+      changed_when: false
+
+    - name: Check for running vms
+      command: pgrep -c qemu
+      register: qemu_output
+      failed_when: qemu_output.rc != 1
+      changed_when: false
+      tags: always
+      check_mode: False
+      when: not skip_droplet_check | default(False) | bool
+
+    # Assemble a list of "valid" (white listed) groups based on group_vars data
+    # We'll use this white list to see if we need additional group_by tasks
+    - name: Assemble list of valid group_var groups
+      set_fact:
+        valid_groups: "{{ lookup('fileglob', 'group_vars/*.yml').split(',') |
+          map('basename') |
+          map('splitext') |
+          map('first') |
+          list |
+          difference('all') }}"
+      tags: always
+
+    # If we are not currently in a group that is white listed (e.g. trusty
+    # bionic, block_data, whatever), then we'll group_by OS distribution to set
+    # firmware levels
+    - name: Add group specific vars based on OS distro
+      group_by:
+        key: "{{ ansible_distribution_release }}"
+      when: group_names | intersect(valid_groups) | length == 0
+      tags: always
+
+    - name: Add other groups as necessary for HPW
+      group_by:
+        key: "{{ machine_role }}"
+      when: machine_role is defined
+      tags: always
+
+    # Determine if node has a role set in role server and apply group_vars if so
+    - block:
+        - name: Query role server for system role
+          uri:
+            url: "https://{{ role_server }}/api/v1/role/{{ ansible_product_serial }}"
+            status_code:
+              - 200
+              - 404
+          register: role_server
+          changed_when: "'role' in role_server.json"
+          vars:
+            rolo_env: "{{ 'role_server.staging' if 'stage' in region else 'role_server.prod' }}"
+
+        - name: Set Role fact
+          set_fact:
+            system_role: "{{ role_server['json']['role'] | replace('-', '_') }}"
+          when:
+            - role_server is defined
+            - role_server.json is defined
+            - role_server.json.role is defined
+
+        - name: Add group by system_role
+          ansible.builtin.group_by:
+            key: "{{ system_role }}"
+          when:
+            - system_role is defined
+            - system_role | intersect(valid_groups) | length == 0
+      check_mode: False
+      tags: always
+
+    - name: Set skip_reboot boolean to true when tag is specified
+      set_fact:
+        skip_reboot: true
+      tags:
+        - never
+        - skip_reboot
+
+    - name: Set skip_mlnx_failure_check boolean to true when tag is specified
+      set_fact:
+        skip_mlnx_failure_check: true
+      tags:
+        - never
+        - skip_mlnx_failure_check
+
+  roles:
+    - role: reboot
+    - { role: dmi_fixup, tags: [dmi_fixup, always] }
+    - { role: bmc_config, tags: [bmc_config, never] }
+    - { role: bmc, tags: bmc }
+    - { role: cpld, tags: cpld }
+    - { role: bios, tags: bios }
+    - { role: intel_me, tags: intel_me }
+    - { role: backplane, tags: backplane }
+    - { role: nic, tags: nic }
+    - { role: hba, tags: hba }
+    - { role: disk, tags: disk }
+    - { role: bios_config, tags: bios_config }
+
+  post_tasks:
+    - name: FWU Check Mode Output
+      debug:
+        var: fw_check
+      when:
+        - ansible_check_mode
+
+  environment:
+    TERM: screen

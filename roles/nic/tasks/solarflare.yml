@@ -1,0 +1,92 @@
+---
+# Note that this playbook exists solely for a subset of v2 class hardware that
+# wasn't migrated from SFC -> Intel NICs. These tasks are generally specific to
+# Solarflare 10G/40G SFC9140 class NICs and will most likely break if new SFC
+# NICs are added.
+# NB: The specific UEFI enablement tasks have been removed because:
+# - The Trusty (Legacy BIOS) -> Bionic (UEFI) migration is complete and all
+#   NICs have been successfully configured.
+# - The default configuration for these NIC appears to have PXE ROMs enabled
+#   for both Legacy BIOS and UEFI.
+# TODO: Revisit these tasks if new SFC adapters are qualified and added to DO.
+- block:
+  - name: Generate list of SFC NICs that require FW changes
+    set_fact:
+      sfc_nics_to_update: "{{ sfc_nics_to_update | default([]) + [item] }}"
+    with_items: "{{ sfc_nics }}"
+    when:
+      - item.firmware_version is version(nic_firmware_data['solarflare']['expected_firmware_version'], 'ne')
+    vars:
+      sfc_nics: "{{ interfaces | selectattr('pci_id', 'in', nic_firmware_data.solarflare.pci_ids)
+                               | selectattr('pci_slot', 'search', '0$') }}"
+  - block:
+    - name: Install SFC update deps
+      package:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - rpm2cpio
+
+    - name: Create SFC update directory
+      tempfile:
+        state: directory
+        suffix: sfc
+      register: sfc_update_temp
+
+    - name: Set SFC update directory fact
+      set_fact:
+        sfc_update_dir: "{{ sfc_update_temp.path }}"
+
+    - name: Grab SFC firmware
+      get_url:
+        url: "{{ nic_firmware_data.solarflare.firmware_url }}"
+        dest: "{{ sfc_update_dir }}/sfcupdate.zip"
+        mode: 0644
+        checksum: "md5:{{ nic_firmware_data.solarflare.firmware_md5 }}"
+      register: get_url_status
+      until: get_url_status is succeeded
+      retries: "{{ artifact_retries }}"
+      delay: "{{ artifact_delay }}"
+
+    - name: Extract SFC update
+      unarchive:
+        src: "{{ sfc_update_dir }}/sfcupdate.zip"
+        dest: "{{ sfc_update_dir }}"
+        remote_src: True
+        mode: 0755
+        list_files: True
+      register: sfc_update_contents
+
+    - name: Identify SFC rpm name
+      set_fact:
+        sfc_update_rpm: "{{ sfc_update_contents.files | first }}"
+
+    - name: Extract SFC update rpm
+      shell: "rpm2cpio {{ sfc_update_rpm }} | cpio -idmv"
+      args:
+        chdir: "{{ sfc_update_dir }}"
+
+    - name: Upgrade/downgrade SFC firmware
+      command: ./sfupdate --write --force --yes
+      args:
+        chdir: "{{ sfc_update_dir }}/usr/sbin"
+      notify: "reboot server"
+
+    - name: Clean up SFC firmware
+      file:
+        path: "{{ sfc_update_dir }}"
+        state: absent
+    when:
+      - sfc_nics_to_update | default([]) | length > 0
+      - not ansible_check_mode
+
+  become: yes
+
+- name: Solarflare NIC Firmware Check
+  set_fact:
+    fw_check: "{{ fw_check | default([]) }} + ['Solarflare NIC (Actual/Expected): {{ item.firmware_version }}/{{ nic_firmware_data['solarflare']['expected_firmware_version'] }}']"
+  with_items:
+      - "{{ sfc_nics }}"
+  when:
+    - sfc_nics is defined
+    - ansible_check_mode

@@ -1,0 +1,34 @@
+---
+- name: Configure iDRAC SystemAttributes
+  community.general.idrac_redfish_config:
+    category: Manager
+    command: SetSystemAttributes
+    resource_id: iDRAC.Embedded.1
+    manager_attributes: "{{ bmc_config[ansible_system_vendor][ansible_product_name]['SystemAttributes'] }}"
+    baseuri: "{{ bmc_address }}"
+    username: "{{ bmc_username }}"
+    password: "{{ bmc_password }}"
+    timeout: "{{ default_uri_timeout }}"
+  delay: "{{ default_uri_delay }}"
+  retries: "{{ default_uri_retries }}"
+  when:
+    - bmc_config[ansible_system_vendor] is defined
+    - bmc_config[ansible_system_vendor][ansible_product_name] is defined
+    - "'SystemAttributes' in bmc_config[ansible_system_vendor][ansible_product_name]"
+
+- name: Configure iDRAC ManagerAttributes
+  community.general.idrac_redfish_config:
+    category: Manager
+    command: SetManagerAttributes
+    resource_id: iDRAC.Embedded.1
+    manager_attributes: "{{ bmc_config[ansible_system_vendor][ansible_product_name]['ManagerAttributes'] }}"
+    baseuri: "{{ bmc_address }}"
+    username: "{{ bmc_username }}"
+    password: "{{ bmc_password }}"
+    timeout: "{{ default_uri_timeout }}"
+  delay: "{{ default_uri_delay }}"
+  retries: "{{ default_uri_retries }}"
+  when:
+    - bmc_config[ansible_system_vendor] is defined
+    - bmc_config[ansible_system_vendor][ansible_product_name] is defined
+    - "'ManagerAttributes' in bmc_config[ansible_system_vendor][ansible_product_name]"

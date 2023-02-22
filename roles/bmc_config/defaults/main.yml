@@ -1,0 +1,75 @@
+---
+bmc_username: root
+bmc_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=secret/platform/ipmi/password:{{ bmc_username }} cacert={{ ca }} url={{ vault_url }}') }}"
+bmc_ro_username: doro
+bmc_ro_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=secret/platform/ipmi/password:{{ bmc_ro_username }} cacert={{ ca }} url={{ vault_url }}') }}"
+bmc_ro_rf_roleid: "ReadOnly"
+ipmi_ro_user_id: 5
+ipmi_admin_user_id: 2
+ipmi_remote_retries: 10
+ipmi_remote_delay: 10 # seconds
+bmc_host_interface_name: "usb0"
+bmc_config:
+  Dell Inc.:
+    bmc_config_task: "dell.yml"
+    bmc_host_interface_data:
+      status_command: "ipmitool raw 0x30 0xcf 1 0 0x30 0 0 0 0"
+      enable_command: "ipmitool raw 0x30 0xcf 0 0 0x2a 0 0 0 0x2a 0 0 0x15 0x31 0x36 0x39 0x2e 0x32 0x35 0x34 0x2e 0x31 0x2e 0x31 00 00 00 00 00 0x30 0x2e 0x30 0x2e 0x30 0x2e 0x30 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+      regex_query: "^ 00 30 00 00 00 30 00 (..)"
+      enabled_status: "01"
+      interface_name: "idrac"
+    PowerEdge R630:
+      bmc_host_interface_data:
+        status_command: "ipmitool raw 0x30 0xcf 1 0 0x30 0 0 0 0"
+        enable_command: "ipmitool raw 0x30 0xcf 0 0 0x2a 0 0 0 0x2a 0 0 0x15 0x31 0x36 0x39 0x2e 0x32 0x35 0x34 0x2e 0x30 0x2e 0x31 00 00 00 00 00 0x30 0x2e 0x30 0x2e 0x30 0x2e 0x30 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+        regex_query: "^ 00 30 00 00 00 30 00 (..)"
+        enabled_status: "01"
+        interface_name: "idrac"
+    PowerEdge R730xd:
+      bmc_host_interface_data:
+        status_command: "ipmitool raw 0x30 0xcf 1 0 0x30 0 0 0 0"
+        enable_command: "ipmitool raw 0x30 0xcf 0 0 0x2a 0 0 0 0x2a 0 0 0x15 0x31 0x36 0x39 0x2e 0x32 0x35 0x34 0x2e 0x30 0x2e 0x31 00 00 00 00 00 0x30 0x2e 0x30 0x2e 0x30 0x2e 0x30 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+        regex_query: "^ 00 30 00 00 00 30 00 (..)"
+        enabled_status: "01"
+        interface_name: "idrac"
+    DSS7500:
+      bmc_host_interface_data:
+        status_command: "ipmitool raw 0x30 0xcf 1 0 0x30 0 0 0 0"
+        enable_command: "ipmitool raw 0x30 0xcf 0 0 0x2a 0 0 0 0x2a 0 0 0x15 0x31 0x36 0x39 0x2e 0x32 0x35 0x34 0x2e 0x30 0x2e 0x31 00 00 00 00 00 0x30 0x2e 0x30 0x2e 0x30 0x2e 0x30 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+        regex_query: "^ 00 30 00 00 00 30 00 (..)"
+        enabled_status: "01"
+        interface_name: "idrac"
+    PowerEdge R640:
+      SystemAttributes:
+        ThermalSettings.1.FanSpeedOffset: "Low" # (JIRA-1234)
+      ManagerAttributes:
+        IPv4.1.DNSFromDHCP: "Enabled"
+    PowerEdge R740xd:
+      ManagerAttributes:
+        IPv4.1.DNSFromDHCP: "Enabled"
+    PowerEdge R7415:
+      ManagerAttributes:
+        IPv4.1.DNSFromDHCP: "Enabled"
+    PowerEdge R6515:
+      ManagerAttributes:
+        IPv4.1.DNSFromDHCP: "Enabled"
+    PowerEdge R6525:
+      ManagerAttributes:
+        IPv4.1.DNSFromDHCP: "Enabled"
+    PowerEdge R650xs:
+      ManagerAttributes:
+        IPv4.1.DNSFromDHCP: "Enabled"
+  HPE:
+    bmc_config_task: "hp.yml"
+    bmc_host_interface_data:
+      status_command: 'ilorest get --refresh --filter "Oem/Hpe/InterfaceType=HostInterface" --selector EthernetInterface --nologo'
+      enable_command: 'ilorest set InterfaceEnabled=true --filter "Oem/Hpe/InterfaceType=HostInterface" --selector EthernetInterface --commit'
+      regex_query: "^InterfaceEnabled=(.+)"
+      enabled_status: "True"
+  Supermicro:
+    bmc_update_task: "supermicro.yml"
+    bmc_host_interface_data:
+      status_command: "ipmitool raw 0x30 0xb5 0x00"
+      enable_command: "ipmitool raw 0x30 0xb5 0x01 0x01"
+      regex_query: "^ (..)"
+      enabled_status: "01"

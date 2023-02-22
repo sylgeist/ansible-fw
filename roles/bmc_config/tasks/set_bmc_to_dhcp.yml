@@ -1,0 +1,30 @@
+---
+# Once the BMC is set to DHCP we need to reset the BMC.
+- block:
+  - name: Set BMC to DHCP
+    command: "ipmitool lan set {{ ipmi_channel }} ipsrc dhcp"
+
+  - name: Reset the BMC
+    command: ipmitool mc reset cold
+
+  - name: Wait for the BMC to come back
+    command: ipmitool lan print
+    register: result
+    until: result.rc == 0
+    retries: 30
+    delay: 5
+
+  - name: Pause for 2 minutes to let DHCP negotiation complete
+    pause:
+      minutes: 2
+
+  - name: Get the ipmitool output
+    command: ipmitool lan print
+    register: ipmitool_output
+
+  become: yes
+
+- name: Set BMC IP as fact
+  set_fact:
+    bmc_address: "{{ ipmitool_output.stdout | regex_search('IP Address\\s+:\\s+(.+)','\\1') | first }}"
+    bmc_address_source: "{{ ipmitool_output.stdout | regex_search('(IP Address Source\\s+:\\s+(.+) Address)', '\\2') | first }}"

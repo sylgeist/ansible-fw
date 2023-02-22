@@ -1,0 +1,120 @@
+---
+- name: Set BMC version facts
+  set_fact:
+    ansible_bmc_version: "{{ (redfish_fw_inventory['redfish_facts']['firmware']['entries'] | selectattr('Name', 'match', 'iLO')
+                                                                                           | list
+                                                                                           | first)['Version'].split(' ')
+                                                                                           | first }}"
+
+- block:
+  - name: Install HPE BMC update package deps
+    package:
+      name: "{{ item }}"
+      state: present
+    with_items:
+      - rpm2cpio
+
+  - name: Create HPE BMC upgrade directory
+    tempfile:
+      state: directory
+      suffix: hp_bmc
+    register: hp_bmc_update_temp
+
+  - name: Set HPE BMC update directory fact
+    set_fact:
+      bmc_update_dir: "{{ hp_bmc_update_temp.path }}"
+
+  # Unfortunately HP introduced a breaking change with Gen10 ilo5 firmware.
+  # Anything > 2.12 requires a minimum of ilo 1.40. Because of that, we'll
+  # zap anything < 1.40 to 1.46 (one of our blessed versions) and then we'll
+  # apply updates >= 2.12 (if necessary)
+  - block:
+    - name: Grab HPE hop BMC bin
+      get_url:
+        url: "{{ artifact_base_url }}/{{ ilo5_hop_fw }}"
+        dest: "{{ bmc_update_dir }}/bmc.rpm"
+        mode: "0755"
+        timeout: "240"
+        checksum: "md5:{{ ilo5_hop_fw_md5 }}"
+      register: get_url_status
+      until: get_url_status is succeeded
+      retries: "{{ artifact_retries }}"
+      delay: "{{ artifact_delay }}"
+
+    # Unfortunately HP updates are packaged...poorly
+    - name: Extract HPE hop BMC update rpm
+      shell: rpm2cpio {{ bmc_update_dir }}/bmc.rpm | cpio -idmv
+      args:
+        chdir: "{{ bmc_update_dir }}"
+
+    # This assumes that the name of the rpm / cpio contents are named consistently
+    - name: Derive HPE hop BMC directory name
+      set_fact:
+        hp_package_dir: "{{ ilo5_hop_fw | urlsplit('path')
+                                        | basename
+                                        | regex_replace('.x86_64.rpm|.i386.rpm') }}"
+        hp_package_arch: "{{ ilo5_hop_fw | urlsplit('path')
+                                         | basename
+                                         | regex_replace('(.+?)(x86_64|i386)(\\.rpm)$', '\\2') }}"
+
+    - name: Upgrade HPE hop BMC FW
+      command: ./hpsetup -s -g
+      args:
+        chdir: "{{ bmc_update_dir }}/usr/lib/{{ hp_package_arch }}-linux-gnu/{{ hp_package_dir }}"
+    vars:
+      ilo5_hop_fw: "firmware-ilo5-1.46-1.1.x86_64.rpm"
+      ilo5_hop_fw_md5: "4d8cd77337f091e106aaa7382f16f711"
+    when:
+      - "'Gen10' in ansible_product_name"
+      - ansible_bmc_version is version('1.40', '<=')
+      - bmc_firmware[ansible_system_vendor][ansible_product_name].bmc_expected_version is version('2.12', '>=')
+
+  - name: Grab HPE BMC bin
+    get_url:
+      url: "{{ bmc_url }}"
+      dest: "{{ bmc_update_dir }}/bmc.rpm"
+      mode: "0755"
+      timeout: "240"
+      checksum: "md5:{{ bmc_md5 }}"
+    register: get_url_status
+    until: get_url_status is succeeded
+    retries: "{{ artifact_retries }}"
+    delay: "{{ artifact_delay }}"
+
+  # Unfortunately HP updates are packaged...poorly
+  - name: Extract HPE BMC update rpm
+    shell: rpm2cpio {{ bmc_update_dir }}/bmc.rpm | cpio -idmv
+    args:
+      chdir: "{{ bmc_update_dir }}"
+
+  # This assumes that the name of the rpm / cpio contents are named consistently
+  - name: Derive HPE BMC directory name
+    set_fact:
+      hp_package_dir: "{{ bmc_url | urlsplit('path')
+                                  | basename
+                                  | regex_replace('.x86_64.rpm|.i386.rpm') }}"
+      hp_package_arch: "{{ bmc_url | urlsplit('path')
+                                   | basename
+                                   | regex_replace('(.+?)(x86_64|i386)(\\.rpm)$', '\\2') }}"
+
+  - name: Upgrade/downgrade HPE BMC
+    command: ./hpsetup -s -g
+    args:
+      chdir: "{{ bmc_update_dir }}/usr/lib/{{ hp_package_arch }}-linux-gnu/{{ hp_package_dir }}"
+
+  - name: Clean up HPE BMC bin
+    file:
+      path: "{{ bmc_update_dir }}"
+      state: absent
+
+  - name: Re-run Redfish Inventory
+    include_role:
+      name: bmc_config
+      tasks_from: rf_inventory
+
+  become: yes
+  when:
+    - expected_bmc_version is defined
+    - ansible_bmc_version is defined
+    - ansible_bmc_version is version(expected_bmc_version, '!=')
+    - not ansible_check_mode

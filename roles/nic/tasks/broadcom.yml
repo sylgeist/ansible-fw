@@ -1,0 +1,113 @@
+---
+- block:
+  # Generate list of BCM NICs based on first port only (for multi port NICs)
+  - name: Generate list of Broadcom NICs
+    set_fact:
+      broadcom_nics: "{{ interfaces | selectattr('pci_id', 'in', nic_firmware_data.broadcom.pci_ids)
+                                    | selectattr('pci_slot', 'search', '0$') }}"
+
+  # Broadcom NIC part numbers are stored in PCI VPD
+  - name: Capture Broadcom PNs
+    command: "lspci -s {{ item.pci_slot }} -vv"
+    with_items: "{{ broadcom_nics }}"
+    register: lspci_output
+    check_mode: False
+    changed_when: false
+
+  - name: Build Broadcom PN list
+    set_fact:
+      broadcom_pns: "{{ lspci_output.results | map(attribute='stdout')
+                                             | map('regex_search', 'Part number: (\\S+)', '\\1')
+                                             | flatten }}"
+
+  # Create a new datastructure that:
+  # - has BCM PNs
+  # - is filtered on valid BCM NICs (port 0 only)
+  # - requires a FW upgrade/downgrade
+  - name: Assemble BCM specific datastructure for NICs that require FW changes
+    set_fact:
+      broadcom_nics_to_update: "{{ broadcom_nics_to_update | default([]) + [{'nic': item.0.nic,
+                                                                             'firmware_version': item.0.firmware_version,
+                                                                             'pci_slot': item.0.pci_slot,
+                                                                             'pci_id': item.0.pci_id,
+                                                                             'pn': item.1}] }}"
+    with_together:
+      - "{{ broadcom_nics }}"
+      - "{{ broadcom_pns }}"
+    when:
+      - item.0.firmware_version is version(nic_firmware_data['broadcom'][item.1]['expected_firmware_version'], 'ne')
+
+  # Download and apply firmware updates
+  - block:
+    - name: Create temp directory for Broadcom FW downloads
+      tempfile:
+        state: directory
+        suffix: -bcm
+      register: broadcom_fw_dir
+
+    - name: Download bnxtnvm
+      get_url:
+        url: "{{ bnxtnvm_url }}"
+        dest: "{{ broadcom_fw_dir.path }}/bnxtnvm"
+        mode: "0755"
+        checksum: "md5:{{ bnxtnvm_md5 }}"
+      register: get_url_status
+      until: get_url_status is succeeded
+      retries: "{{ artifact_retries }}"
+      delay: "{{ artifact_delay }}"
+      with_items: "{{ broadcom_nics_to_update }}"
+      vars:
+        bnxtnvm_md5: "{{ nic_firmware_data['broadcom'][item.pn]['bnxtnvm_md5'] }}"
+        bnxtnvm_url: "{{ nic_firmware_data['broadcom'][item.pn]['bnxtnvm_url'] }}"
+
+    - name: Download Broadcom FW
+      get_url:
+        url: "{{ broadcom_fw_url }}"
+        dest: "{{ broadcom_fw_dir.path }}/{{ broadcom_fw_filename }}"
+        mode: "0644"
+        checksum: "md5:{{ broadcom_fw_md5 }}"
+      register: get_url_status
+      until: get_url_status is succeeded
+      retries: "{{ artifact_retries }}"
+      delay: "{{ artifact_delay }}"
+      with_items: "{{ broadcom_nics_to_update }}"
+      vars:
+        broadcom_fw_md5: "{{ nic_firmware_data['broadcom'][item.pn]['firmware_md5'] }}"
+        broadcom_fw_url: "{{ nic_firmware_data['broadcom'][item.pn]['firmware_url'] }}"
+        broadcom_fw_filename: "{{ nic_firmware_data['broadcom'][item.pn]['firmware_url'] | basename }}"
+
+    - name: Upgrade/downgrade Broadcom firmware
+      command: "./bnxtnvm --yes --force -dev={{ item.nic }} install {{ broadcom_fw_filename }}"
+      args:
+        chdir: "{{ broadcom_fw_dir.path }}"
+      with_items: "{{ broadcom_nics_to_update }}"
+      vars:
+        broadcom_fw_filename: "{{ nic_firmware_data['broadcom'][item.pn]['firmware_url'] | basename }}"
+
+    - name: Reset NIC to apply FW update
+      command: "./bnxtnvm reset"
+      args:
+        chdir: "{{ broadcom_fw_dir.path }}"
+      with_items: "{{ broadcom_nics_to_update }}"
+
+    - name: Delete temp fw files
+      file:
+        path: "{{ broadcom_fw_dir.path }}"
+        state: absent
+
+    when:
+      - broadcom_nics_to_update | default([]) | length > 0
+      - not ansible_check_mode
+
+  become: yes
+
+- name: Broadcom NIC Firmware Check
+  set_fact:
+    fw_check: "{{ fw_check | default([]) }} + ['Broadcom NIC (Actual/Expected): {{ item.0.firmware_version }}/{{ nic_firmware_data['broadcom'][item.1]['expected_firmware_version'] }}']"
+  with_together:
+    - "{{ broadcom_nics }}"
+    - "{{ broadcom_pns }}"
+  when:
+    - broadcom_nics is defined
+    - broadcom_pns is defined
+    - ansible_check_mode

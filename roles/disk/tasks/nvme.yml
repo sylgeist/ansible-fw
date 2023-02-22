@@ -1,0 +1,174 @@
+---
+- block:
+  # Luckily nvme-cli will give us json, no regex required
+  - name: Identify NVMe model and firmware information
+    command: "nvme list -o json"
+    register: nvme_disk_info
+    changed_when: false
+    check_mode: False
+
+  - name: Assemble NVMe datastructure with block device, model and f/w version
+    set_fact:
+      nvme_disks: "{{ nvme_disk_info_devices.Devices }}"
+    vars:
+      nvme_disk_info_devices: "{{ nvme_disk_info.stdout | from_json }}"
+
+  - block:
+    - name: Create NVMe fw update directory
+      tempfile:
+        state: directory
+        suffix: diskfw
+      register: diskfw_directory
+      changed_when: false
+
+    # Older Intel P4510 drives require an intermediate "hop" firmware to be
+    # applied before newer firmware updates can be applied. We will
+    # specifically look for FW versions that are "very old" and will fail
+    # without the hop firmware in question.
+    - block:
+      - name: Download hop P4510 FW
+        get_url:
+          url: "{{ artifact_base_url }}/{{ p4510_hop_fw }}"
+          dest: "{{ diskfw_directory.path }}/{{ p4510_hop_fw }}"
+          checksum: "md5:{{ p4510_hop_fw_md5 }}"
+        register: get_url_status
+        until: get_url_status is succeeded
+        retries: "{{ artifact_retries }}"
+        delay: "{{ artifact_delay }}"
+
+      - name: Download P4510 hop firmware to NVMe drive
+        command: "nvme fw-download -f {{ fwpath }} {{ item.DevicePath }}"
+        with_items: "{{ nvme_disks }}"
+        when:
+          - item.ModelNumber is in disk_firmware
+          - item.Firmware is in p4510_pre_hop_fw
+        register: hop_download_status
+        vars:
+          fwpath: "{{ diskfw_directory.path }}/{{ p4510_hop_fw }}"
+        loop_control:
+          label: "{{ item.DevicePath }}"
+
+      - name: Commit P4510 hop firmware to NVMe drive
+        command: "nvme fw-commit --action 1 {{ item['item']['DevicePath'] }}"
+        with_items: "{{ hop_download_status.results }}"
+        when:
+          - item['skipped'] is not defined
+        loop_control:
+          label: "{{ item['item']['DevicePath'] }}"
+
+      # Brace yourself for the scary part...we are going to perform a PCIe
+      # reset to load this firmware "right now" so that we can _really_ update
+      # our firmware with the next round of tasks. Yes, this _could_ be
+      # impactful. However, we should rarely run this task, and if we do, it
+      # will be in hpw / from a live image. Yes, I'm willing to take that risk.
+      # Note that we need to reset nvme0, not nvme0n1, that's the reason for
+      # the string mainuplation of the DevicePath ([:-2])
+      - name: Reset P4510 drive
+        command: "nvme reset {{ item['item']['DevicePath'][:-2] }}"
+        with_items: "{{ hop_download_status.results }}"
+        when:
+          - item['skipped'] is not defined
+        loop_control:
+          label: "{{ item['item']['DevicePath'] }}"
+      vars:
+        p4510_hop_fw: "P4510_VDV1046X_VB1B015A_Generic-0001_WFEM01K0_signed.bin"
+        p4510_hop_fw_md5: "b22a0e263d911e454127a8d06a588c51"
+        p4510_pre_hop_fw:
+          - "VDV10131"
+          - "VDV10120"
+          - "VDV10110"
+        num_old_p4510: "{{ nvme_disks | selectattr('Firmware', 'in', p4510_pre_hop_fw)
+                                      | list
+                                      | length }}"
+      when:
+        - num_old_p4510 | int > 0
+
+    - name: Download NVMe fw
+      get_url:
+        url: "{{ disk_firmware[item.ModelNumber]['firmware_url'] }}"
+        dest: "{{ diskfw_directory.path }}/{{ disk_firmware[item.ModelNumber]['firmware_url'] | urlsplit('path') | basename }}"
+        checksum: "md5:{{ disk_firmware[item.ModelNumber]['firmware_md5'] }}"
+      register: get_url_status
+      until: get_url_status is succeeded
+      retries: "{{ artifact_retries }}"
+      delay: "{{ artifact_delay }}"
+      with_items: "{{ nvme_disks }}"
+      when:
+        - item.ModelNumber is in disk_firmware
+        - item.Firmware is version((disk_firmware[item.ModelNumber]['expected_firmware_version']), "!=")
+
+    # Updating NVMe firmware requires two steps: download and then ac ommit
+    - name: Download disk firmware to NVMe drive
+      command: "nvme fw-download -f {{ fwpath }} {{ item.DevicePath }}"
+      with_items: "{{ nvme_disks }}"
+      when:
+        - item.ModelNumber is in disk_firmware
+        - item.Firmware is version((disk_firmware[item.ModelNumber]['expected_firmware_version']), "!=")
+      register: diskfw_download_status
+      vars:
+        fwpath: "{{ diskfw_directory.path }}/{{ disk_firmware[item.ModelNumber]['firmware_url'] | urlsplit('path') | basename }}"
+      loop_control:
+        label: "{{ item.DevicePath }}"
+
+    # Commit newly downloaded FW
+    # When rc code is not 0 (17 or 85) additional steps needed to apply FW
+    - name: Commit disk firmware to NVMe drive
+      command: "nvme fw-commit --action 3 {{ item['item']['DevicePath'] }}"
+      with_items: "{{ diskfw_download_status.results }}"
+      when:
+        - item['skipped'] is not defined
+      register: diskfw_commit_status
+      loop_control:
+        label: "{{ item['item']['DevicePath'] }}"
+      failed_when: diskfw_commit_status.rc not in (0, 17, 85)
+
+    - name: NMVe reset drives with RC 17
+      command: "nvme reset {{ item['item']['item']['DevicePath'][:-2] }}"
+      become: yes
+      when:
+        - nvme_drives_to_reset | default([]) | length > 0
+      vars:
+        nvme_drives_to_reset: "{{ diskfw_commit_status.results | selectattr('rc', 'defined')
+                                                               | selectattr('rc', '==', 17) }}"
+      with_items: "{{ nvme_drives_to_reset }}"
+
+    - name: NMVe subsystem-reset drives with RC 85
+      command: "nvme subsystem-reset {{ item['item']['item']['DevicePath'][:-2] }}"
+      become: yes
+      when:
+        - nvme_drives_to_reset | default([]) | length > 0
+      vars:
+        nvme_drives_to_reset: "{{ diskfw_commit_status.results | selectattr('rc', 'defined')
+                                                               | selectattr('rc', '==', 85) }}"
+      with_items: "{{ nvme_drives_to_reset }}"
+
+    - name: Remove NVMe fw dir
+      file:
+        path: "{{ diskfw_directory.path }}"
+        state: absent
+      changed_when: false
+
+    # Drive vendors may have a different "default" NVMe block size. Let's
+    # standardize this across all drives.
+    - name: Set unique per device block size
+      command: "nvme format -b {{ nvme_block_size }} -f {{ item.DevicePath }}"
+      with_items: "{{ nvme_disks }}"
+      vars:
+        nvme_block_size: "{{ disk_firmware[item.ModelNumber]['disk_nvme_block_size'] | default(disk_nvme_block_size) }}"
+      when:
+        - hpw_train is defined or format_nvme_block_size | default(False) | bool
+        - item.SectorSize | int != nvme_block_size | int
+
+    when:
+      - nvme_disks | default([]) | length > 0
+      - not ansible_check_mode
+
+  become: yes
+
+- name: NVME Firmware Version Check
+  set_fact:
+    fw_check: "{{ fw_check | default([]) }} + ['NVME (Actual/Expected): {{ item.Firmware }}/{{ disk_firmware[item.ModelNumber]['expected_firmware_version'] }}']"
+  with_items: "{{ nvme_disks }}"
+  when:
+    - nvme_disks is defined
+    - ansible_check_mode

@@ -1,0 +1,105 @@
+---
+- block:
+  - name: Capture SmartArray information
+    command: ssacli ctrl all show detail
+    register: ssacli_out
+    check_mode: False
+    changed_when: False
+
+  # Jumping through some hoops to handle edge cases with multiple SmartArray HBAs
+  # (I dont think we have any of these, but /shrug)
+  - name: Identify HPE HBAs and firmware levels
+    set_fact:
+      smartarrays: "{{ smartarrays| default([]) + [item.0] }}"
+      smartarray_firmwares: "{{ smartarray_firmwares | default([]) + [item.1] }}"
+    with_together:
+      - "{{ ssacli_out.stdout | regex_findall('(.*)(?: in Slot.*)') }}"
+      - "{{ ssacli_out.stdout | regex_findall('(?:Firmware Version: )(.*)') }}"
+
+  - name: Determine which HPE HBAs need updates and location of update files
+    set_fact:
+      needs_update: "{{ needs_update | default([]) + [item.1 is version(hba_firmware.hp_smartarray[item.0].hba_expected_version, '!=')] }}"
+      smartarray_update_files: "{{ smartarray_update_files | default([]) + [hba_firmware.hp_smartarray[item.0].hba_url | urlsplit('path') | basename] }}"
+    with_together:
+      - "{{ smartarrays }}"
+      - "{{ smartarray_firmwares }}"
+
+  - name: Assemble HPE SmartArray data structure
+    set_fact:
+      smartarray_data: >-
+        {{ smartarray_data | default([]) | union([{
+          'hba': item.0,
+          'fw': item.1,
+          'needs_update': item.2,
+          'file': item.3
+        }]) }}
+    with_together:
+      - "{{ smartarrays }}"
+      - "{{ smartarray_firmwares }}"
+      - "{{ needs_update }}"
+      - "{{ smartarray_update_files }}"
+
+  become: yes
+
+- block:
+  - name: Install HPE update package deps
+    package:
+      name: "{{ item }}"
+      state: present
+    with_items:
+      - rpm2cpio
+
+  - name: Create HPE HBA upgrade directory
+    file:
+      path: /tmp/hba
+      state: directory
+      mode: '0755'
+    with_items: "{{ smartarray_data }}"
+    when: item.needs_update
+
+  - name: Grab the HBA bin
+    get_url:
+      url: "{{ hba_firmware.hp_smartarray[item.hba].hba_url }}"
+      dest: "/tmp/hba/{{ item.file }}"
+      mode: "0755"
+      timeout: "240"
+      checksum: "md5:{{ hba_firmware.hp_smartarray[item.hba].hba_md5 }}"
+    register: get_url_status
+    until: get_url_status is succeeded
+    retries: "{{ artifact_retries }}"
+    delay: "{{ artifact_delay }}"
+    with_items: "{{ smartarray_data }}"
+    when: item.needs_update
+
+  - name: Extract the update rpm
+    shell: "rpm2cpio /tmp/hba/{{ item.file }} | cpio -idmv"
+    args:
+      chdir: /tmp/hba
+    with_items: "{{ smartarray_data }}"
+    when: item.needs_update
+
+  - name: Upgrade/downgrade HPE HBA
+    command: "./hpsetup -s -g"
+    args:
+      chdir: "/tmp/hba/usr/lib/{{ item.file | regex_replace('(.+?)(x86_64|i386)(\\.rpm)$', '\\2') }}-linux-gnu/{{ item.file | regex_replace('.x86_64.rpm|.i386.rpm') }}"
+    register: hba_upg
+    failed_when: hba_upg.rc != 1 # 1 == Upgrade succeeded
+    with_items: "{{ smartarray_data }}"
+    when: item.needs_update
+    notify: "reboot server"
+
+  - name: Clean up HPE HBA bin
+    file:
+      path: /tmp/hba
+      state: absent
+
+  become: yes
+  when: not ansible_check_mode
+
+- name: SmartArray Firmware Check
+  set_fact:
+    fw_check: "{{ fw_check | default([]) }} + ['HP SmartArray (Actual/Expected): {{ item.fw }}/{{ hba_firmware.hp_smartarray[item.hba].hba_expected_version }}']"
+  with_items: "{{ smartarray_data }}"
+  when:
+    - smartarray_data is defined
+    - ansible_check_mode

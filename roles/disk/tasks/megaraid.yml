@@ -1,0 +1,4 @@
+# This _should_ be a noop
+# If we hit this task it's because we detected a failed disk or a SAS drive
+# (sas drives are handled with scsi.yml)
+---

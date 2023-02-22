@@ -1,0 +1,62 @@
+---
+# Collect and store current Thermal Settings via RACADM for later
+# Only applies to DSS7500 and R730xd
+- name: Get Current Thermal Settings from iDRAC
+  raw: racadm get system.thermalsettings
+  register: racadm_thermalsettings_output
+  changed_when: false
+  vars:
+    ansible_connection: ssh
+    ansible_user: "{{ bmc_username }}"
+    ansible_host: "{{ bmc_address }}"
+    ansible_password: "{{ bmc_password }}"
+
+- name: Set thermal settings facts
+  set_fact:
+    thermal_profile: "{{ racadm_thermalsettings_output.stdout | regex_search('ThermalProfile=([a-zA-Z ]+).*', '\\1')
+                                                              | list
+                                                              | first }}"
+    min_fan_speed: "{{ racadm_thermalsettings_output.stdout | regex_search('MinimumFanSpeed=([0-9]+)', '\\1')
+                                                            | list
+                                                            | first }}"
+    fan_speed_offset: "{{ racadm_thermalsettings_output.stdout | regex_search('FanSpeedOffset=([a-zA-Z ]+).*', '\\1')
+                                                               | default(['Fake Fan Offset'], true)
+                                                               | list
+                                                               | first }}"
+
+# Modify thermal profile and fan speeds on Dell DSS7500 if needed
+# We want a little more airflow on these 90-disk units.
+- name: Modify thermal profile on DSS7500
+  raw:  racadm set system.thermalsettings.thermalProfile 1
+  vars:
+    ansible_connection: ssh
+    ansible_user: "{{ bmc_username }}"
+    ansible_host: "{{ bmc_address }}"
+    ansible_password: "{{ bmc_password }}"
+  when:
+    - ansible_product_name == 'DSS7500'
+    - thermal_profile != 'Maximum Performance'
+
+# Increase minimum fan speeds to 60% on Dell DSS7500
+- name: Modify minimum fan speeds on DSS7500
+  raw:  racadm set system.thermalsettings.MinimumFanSpeed 60
+  vars:
+    ansible_connection: ssh
+    ansible_user: "{{ bmc_username }}"
+    ansible_host: "{{ bmc_address }}"
+    ansible_password: "{{ bmc_password }}"
+  when:
+    - ansible_product_name == 'DSS7500'
+    - min_fan_speed != '60'
+
+# Increase minimum fan speeds offset
+- name: Modify Fan Speed Offset on R730xd/740xd
+  raw:  racadm set system.thermalsettings.fanspeedoffset 1
+  vars:
+    ansible_connection: ssh
+    ansible_user: "{{ bmc_username }}"
+    ansible_host: "{{ bmc_address }}"
+    ansible_password: "{{ bmc_password }}"
+  when:
+    - ansible_product_name in ('PowerEdge R730xd','PowerEdge R740xd')
+    - fan_speed_offset != 'High Fan Speed'

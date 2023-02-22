@@ -1,0 +1,93 @@
+---
+- block:
+  # Jumping through hoops due to inexplicable HPE BIOS behavior that prevents
+  # us from properly applying all BIOS settings in one shot. Similar to other
+  # vendors we will flip to UEFI, poll, make remaining changes, poll.
+  # (Note this is mostly a copy/pasta of the supermicro UEFI flip.)
+  # TODO: DRY out this task + SM task
+
+  - name: Change bootmode to UEFI
+    community.general.redfish_config:
+      category: Systems
+      command: SetBiosAttributes
+      bios_attributes:
+        BootMode: "Uefi"
+      baseuri: "{{ bmc_address }}"
+      username: "{{ bmc_username }}"
+      password: "{{ bmc_password }}"
+      timeout: "{{ default_uri_timeout }}"
+    delay: "{{ default_uri_delay }}"
+    retries: "{{ default_uri_retries }}"
+    delegate_to: 127.0.0.1
+
+  - name: Power cycle node
+    community.general.redfish_command:
+      category: Systems
+      command: PowerReboot
+      baseuri: "{{ bmc_address }}"
+      username: "{{ bmc_username }}"
+      password: "{{ bmc_password }}"
+      timeout: "{{ default_uri_timeout }}"
+    delegate_to: 127.0.0.1
+
+  # Unfortunately the HPE redfish implementation doesn't list 'pending changes'
+  # in the BIOS SettingsObject (_all_ values are listed). Because of that we
+  # can't poll the SettingsObject until it is empty. Instead we'll query for
+  # the currently configured settings and explicitly look to see if BootMode
+  # has been configured.
+  - name: Poll for completion of pending BIOS changes
+    uri:
+      url: "https://{{ bmc_address }}/{{ redfish_uri }}"
+      user: "{{ bmc_username }}"
+      password: "{{ bmc_password }}"
+      validate_certs: no
+      force_basic_auth: yes
+      headers:
+        accept: 'application/json'
+      timeout: "{{ default_uri_timeout }}"
+    register: pending_settings
+    until:
+    - pending_settings.json is defined
+    - pending_settings.json.Attributes.BootMode == 'Uefi'
+    delegate_to: 127.0.0.1
+    retries: "{{ uefi_task_uri_retries }}"
+    delay: "{{ uefi_task_uri_delay }}"
+    vars:
+      redfish_uri: "redfish/v1/Systems/1/Bios"
+
+  # iLO5 will return Current == Pending status "too quickly" during POST before
+  # the first reboot is initiated. In order to avoid setting BIOS options and
+  # rebooting while the first reboot is still pending, we will add a super
+  # clunky pause.
+  - name: Pause while node continues to POST after UEFI flip
+    pause:
+      seconds: 60
+
+  - name: Configure BIOS Settings
+    community.general.redfish_config:
+      category: Systems
+      command: SetBiosAttributes
+      bios_attributes: "{{ bios_config[ansible_system_vendor][ansible_product_name]['bios_attrs'] }}"
+      baseuri: "{{ bmc_address }}"
+      username: "{{ bmc_username }}"
+      password: "{{ bmc_password }}"
+      timeout: "{{ default_uri_timeout }}"
+    delegate_to: 127.0.0.1
+
+  - name: Power cycle node
+    community.general.redfish_command:
+      category: Systems
+      command: PowerReboot
+      baseuri: "{{ bmc_address }}"
+      username: "{{ bmc_username }}"
+      password: "{{ bmc_password }}"
+      timeout: "{{ default_uri_timeout }}"
+    delegate_to: 127.0.0.1
+
+  - name: Verify node reboots
+    wait_for_connection:
+      timeout: "{{ reboot_timeout }}"
+
+  - name: End play after successful UEFI flip
+    meta: end_host
+

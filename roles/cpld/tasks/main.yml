@@ -1,0 +1,14 @@
+---
+- block:
+  - name: Include CPLD update tasks
+    include_tasks: "{{ cpld_firmware[ansible_system_vendor]['cpld_update_task'] }}"
+  when:
+    - ansible_system_vendor in cpld_firmware
+    - ansible_product_name in cpld_firmware[ansible_system_vendor]
+
+- name: CPLD Firmware Versions Check
+  set_fact:
+    fw_check: "{{ fw_check | default([]) }} + ['CPLD Version (Actual/Expected): {{ cpld_version }}/{{ cpld_firmware[ansible_system_vendor][ansible_product_name]['cpld_expected_version'] }}']"
+  when:
+    - cpld_version is defined
+    - ansible_check_mode

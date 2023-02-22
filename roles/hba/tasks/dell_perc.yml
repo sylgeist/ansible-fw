@@ -1,0 +1,195 @@
+---
+- block:
+    # Before we start a PERC FW update, let's check to make sure our backplane
+    # is still reporting correctly.
+    # This check is mostly applicable to the disk role, but that role is mostly
+    # HBA/vendor agnostic. Because of that, I'm going to slap this check into
+    # the hba role (for now).
+    # There could exist an edge case where a user manually runs firmware_updater
+    # on a node with a broken backplane and _only_ specifies the disk tag.
+    # In that situation, we wouldn't execute this check and the disk update
+    # would fail.
+    - name: Gather Dell backplane status
+      command: perccli64 /call/eall show
+      changed_when: False
+      register: perccli_out
+      check_mode: False
+      environment:
+        PATH: "{{ ansible_env.PATH }}:/opt/MegaRAID/perccli"
+
+    - name: Check if Dell backplane is present
+      assert:
+        that: "'No Enclosure Found!' not in perccli_out.stdout"
+        success_msg: "Dell backplane detected"
+        fail_msg: "Error! Dell backplane not properly detected"
+
+    # perccli64 _may_ be located in some weird places
+    - name: Capture PERC information
+      command: perccli64 /call show
+      environment:
+        PATH: "{{ ansible_env.PATH }}:/opt/MegaRAID/perccli"
+      register: perccli_out
+      check_mode: False
+      changed_when: False
+
+    # Jumping through some hoops to handle edge cases with multiple PERCs
+    # (like the v3 object data nodes)
+    - name: Identify PERCs and firmware levels
+      set_fact:
+        percs: "{{ percs | default([]) }} + ['{{ item.0 }}']"
+        perc_firmwares: "{{ perc_firmwares | default([]) }} + ['{{ item.1 }}']"
+        perc_personality: "{{ perc_personality | default([]) }} + ['{{ item.2 }}']"
+        perc_controller_id: "{{ perc_controller_id | default([]) }} + ['{{ item.3 }}']"
+      with_together:
+        - "{{ perccli_out.stdout | regex_findall('(?:Product Name)(?: = )(.*)') }}"
+        - "{{ perccli_out.stdout | regex_findall('(?:FW Package Build)(?: = )(.*)') }}"
+        - "{{ perccli_out.stdout | regex_findall('(?:Current Personality)(?: = )(.*)') }}"
+        - "{{ perccli_out.stdout | regex_findall('(?:Controller)(?: = )(.*)') }}"
+
+    - name: Determine which PERCs need updates and location of update files
+      set_fact:
+        needs_update: "{{ needs_update | default([]) }} + [{{ item.1 is version(hba_firmware.dell_perc[item.0].hba_expected_version, '!=') }}]"
+        perc_update_files: "{{ perc_update_files | default([]) }} + ['{{ hba_firmware.dell_perc[item.0].hba_url | urlsplit('path') | basename }}']"
+      with_together:
+        - "{{ percs }}"
+        - "{{ perc_firmwares }}"
+
+    - name: Assemble PERC data structure
+      set_fact:
+        perc_data: >-
+          {{ perc_data | default([]) | union([{
+            'hba': item.0,
+            'fw': item.1,
+            'needs_update': item.2,
+            'file': item.3,
+            'personality': item.4,
+            'controller_id': item.5,
+          }]) }}
+      with_together:
+        - "{{ percs }}"
+        - "{{ perc_firmwares }}"
+        - "{{ needs_update }}"
+        - "{{ perc_update_files }}"
+        - "{{ perc_personality }}"
+        - "{{ perc_controller_id }}"
+
+  become: yes
+
+- block:
+    # Quick detour to flip condtionally flip PERC personality
+    - name: Set PERC Personality
+      command: "perccli64 /c{{ item.controller_id }} set personality={{ personality }}"
+      register: perc_personality_out
+      environment:
+        PATH: "{{ ansible_env.PATH }}:/opt/MegaRAID/perccli"
+      # We need to perform some minor string manipulation.
+      # the perccli "get" operation reports something like "RAID-Mode",
+      # but the "set" operation requires "RAID" or "HBA" (drop "-Mode")
+      vars:
+        personality:
+          "{{ hba_firmware.dell_perc[item.hba].perc_personality | regex_search('(.+)-', '\\1')
+          | first }}"
+      with_items: "{{ perc_data }}"
+      notify: "reboot server"
+      when:
+        - hba_firmware.dell_perc[item.hba].perc_personality is defined
+        - item.personality != hba_firmware.dell_perc[item.hba].perc_personality
+
+    # If we changed personality, we need to reboot prior to apply perc updates.
+    # (only applicable if we are updating PERC FW)
+    - name: Reboot after changing personality, before PERC FW update
+      include_tasks: flush_handlers.yml
+      when:
+        - perc_personality_out is changed
+        - perc_data | selectattr('needs_update', 'equalto', True) | list | length >= 1
+
+    # Boot drive detection and configuration for certain PERC controllers
+    - block:
+        - name: Get the current boot drive
+          command: "perccli64 /c{{ item.controller_id }} show bootdrive"
+          register: perc_boot_drive
+          changed_when: False
+          environment:
+            PATH: "{{ ansible_env.PATH }}:/opt/MegaRAID/perccli"
+          with_items: "{{ perc_data }}"
+
+        - name: Identify bootdrive and enclosure
+          set_fact:
+            current_boot_drive: "{{ boot_drive }}"
+            current_enclosure: "{{ enclosure }}"
+          vars:
+            enclosure:
+              "{{ perc_boot_drive['results'][0].stdout | regex_findall('BootDrive PD:([0-9]+)_[0-9]+', '\\1')
+              | default([''], true)
+              | list
+              | first }}"
+            boot_drive:
+              "{{ perc_boot_drive['results'][0].stdout | regex_findall('BootDrive PD:[0-9]+_([0-9]+)', '\\1')
+              | default([''], true)
+              | list
+              | first }}"
+          with_items: "{{ perc_data }}"
+
+        - name: Configure boot drive on PERC
+          command: "perccli64 /c{{ item.controller_id }}/e{{ expected_enclosure }}/s{{ expected_boot_drive }} set bootdrive=on"
+          environment:
+            PATH: "{{ ansible_env.PATH }}:/opt/MegaRAID/perccli"
+          vars:
+            expected_boot_drive: "{{ hba_firmware.dell_perc[item.hba].boot_drive }}"
+            expected_enclosure: "{{ hba_firmware.dell_perc[item.hba].enclosure }}"
+          with_items: "{{ perc_data }}"
+          when:
+            - current_boot_drive != expected_boot_drive
+            - current_enclosure == expected_enclosure
+      when:
+        - "'Physical Drives' in perccli_out.stdout"
+        - hba_firmware.dell_perc[item.hba].boot_drive is defined
+
+    - name: Download the PERC upgrade
+      get_url:
+        url: "{{ hba_firmware.dell_perc[item.hba].hba_url }}"
+        dest: "/tmp/{{ item.file }}"
+        mode: "0755"
+        timeout: "240"
+        checksum: "md5:{{ hba_firmware.dell_perc[item.hba].hba_md5 }}"
+      register: get_url_status
+      until: get_url_status is succeeded
+      retries: "{{ artifact_retries }}"
+      delay: "{{ artifact_delay }}"
+      with_items: "{{ perc_data }}"
+      when: item.needs_update
+
+    - name: Upgrade/downgrade PERC
+      command: "/tmp/{{ item.file }} -q -f"
+      register: perc_upg
+      when: item.needs_update
+      failed_when: perc_upg.rc != 2
+      with_items: "{{ perc_data }}"
+      notify: "reboot server"
+
+    - name: Clean up PERC bin
+      file:
+        path: "/tmp/{{ item.file }}"
+        state: absent
+      with_items: "{{ perc_data }}"
+
+    # In certain circmustances we may want to immediately reboot after we have
+    # completed our HBA FW upgrade (JIRA-1234).
+    # Currently there isn't a way to conditionally flush handlers.
+    # As a workaround, we can include a task to conditionally flush.
+    # https://github.com/ansible/ansible/issues/41313
+    - include_tasks: flush_handlers.yml
+      when:
+        - perc_upg is changed
+        - reboot_post_hba_fw_update | default(False)
+
+  become: yes
+  when: not ansible_check_mode
+
+- name: PERC Firmware Check
+  set_fact:
+    fw_check: "{{ fw_check | default([]) }} + ['PERC (Actual/Expected): {{ item.fw }}/{{ hba_firmware.dell_perc[item.hba].hba_expected_version }}']"
+  with_items: "{{ perc_data }}"
+  when:
+    - perc_data is defined
+    - ansible_check_mode

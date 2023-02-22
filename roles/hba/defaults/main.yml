@@ -1,0 +1,83 @@
+hba_firmware:
+  dell_perc:
+    PERC H330 Mini:
+      hba_expected_version: "25.5.8.0001"
+      hba_url: "{{ artifact_base_url }}/SAS-RAID_Firmware_FY18X_LN_25.5.8.0001_A14.BIN"
+      hba_md5: "b721acee51a7084797b41adde5b2b8e2"
+      pci_id: "1000:005f:1028:1f4b"
+      perc_personality: "HBA-Mode"
+      enclosure: "32"
+      boot_drive: "0"
+    PERC H330 Adapter:
+      hba_expected_version: "25.5.8.0001"
+      hba_url: "{{ artifact_base_url }}/SAS-RAID_Firmware_FY18X_LN_25.5.8.0001_A14.BIN"
+      hba_md5: "b721acee51a7084797b41adde5b2b8e2"
+      pci_id: "1000:005f:1028:1f44"
+      perc_personality: "HBA-Mode"
+    PERC H730P Mini:
+      hba_expected_version: "25.5.5.0005"
+      hba_url: "{{ artifact_base_url }}/SAS-RAID_Firmware_F675Y_LN_25.5.5.0005_A13.BIN"
+      hba_md5: "911d4c002558999c89aa0b510af0e1b1"
+      pci_id: "1000:005d:1028:1f47"
+      perc_personality: "HBA-Mode"
+      enclosure: "32"
+      boot_drive: "0"
+    PERC H710 Mini:
+      hba_expected_version: "21.3.5-0002"
+      hba_url: "{{ artifact_base_url }}/SAS-RAID_Firmware_KKR9J_LN_21.3.5-0002_A09.BIN"
+      hba_md5: "791adaeb5b1bdc652c9d3161efa953ed"
+      pci_id: "1000:005b:1028:1f38"
+    Dell HBA330 Mini:
+      hba_expected_version: "16.17.00.03"
+      hba_url: "{{ artifact_base_url }}/SAS-Non-RAID_Firmware_8VCXF_LN_16.17.00.03_A06_01.BIN"
+      hba_md5: "54fd3ef24aef1dea1a5583231a3ebd13"
+      pci_id: "1000:0097:1028:1f53"
+  hp_smartarray:
+    "HPE Smart Array E208i-a SR Gen10":
+      hba_expected_version: "4.11"
+      hba_url: "{{ artifact_base_url }}/firmware-smartarray-f7c07bdbbd-4.11-1.1.x86_64.rpm"
+      hba_md5: "55853ba8d74cbdc11e75b058a44c48ea"
+      pci_id: "9005:028f:103c:0654"
+    "HPE Smart Array P408i-p SR Gen10":
+      hba_expected_version: "3.00"
+      hba_url: "{{ artifact_base_url }}/firmware-smartarray-f7c07bdbbd-3.00-1.1.x86_64.rpm"
+      hba_md5: "5f436dca20c8f4e8e4758eb492ebe614"
+      pci_id: "9005:028f:103c:0600"
+    "HPE Smart Array P408i-a SR Gen10":
+      hba_expected_version: "3.00"
+      hba_url: "{{ artifact_base_url }}/firmware-smartarray-f7c07bdbbd-3.00-1.1.x86_64.rpm"
+      hba_md5: "5f436dca20c8f4e8e4758eb492ebe614"
+      pci_id: "9005:028f:103c:0602"
+    "HPE Smart Array P816i-a SR Gen10":
+      hba_expected_version: "5.32"
+      hba_url: "{{ artifact_base_url }}/firmware-smartarray-f7c07bdbbd-5.32-2.1.x86_64.rpm"
+      hba_md5: "79a9300c53c5a9d08814a3ee50e01a20"
+      pci_id: "9005:028f:103c:1100"
+  supermicro_hba:
+    "LSI MegaRAID ROMB":
+      hba_expected_version: "23.34.0-0019"
+      hba_url: "{{ artifact_base_url }}/3.460.115-6465_smc2208.rom"
+      hba_md5: "f96eea3f381cb1cf4e6a918e91eea7b9"
+      pci_id: "1000:005b:15d9:0690"
+    # Unfortunately the "name" of this HBA reports differently after the 23.34.0-0019 FW update
+    "LSI 2208 MegaRAID":
+      hba_expected_version: "23.34.0-0019"
+      hba_url: "{{ artifact_base_url }}/3.460.115-6465_smc2208.rom"
+      hba_md5: "f96eea3f381cb1cf4e6a918e91eea7b9"
+      pci_id: "1000:005b:15d9:0690"
+    # Guess what? Some versions of this firmware report a different product naem for the same card!
+    "Supermicro SMC2208":
+      hba_expected_version: "23.34.0-0019"
+      hba_url: "{{ artifact_base_url }}/3.460.115-6465_smc2208.rom"
+      hba_md5: "f96eea3f381cb1cf4e6a918e91eea7b9"
+      pci_id: "1000:005b:15d9:0690"
+    "AVAGO 3108 MegaRAID":
+      hba_expected_version: "24.21.0-0028"
+      hba_url: "{{ artifact_base_url }}/4.680.00-8290_smc3108.rom"
+      hba_md5: "613e2e22dafe9e447b6a31e2a528171e"
+      pci_id: "1000:005d:15d9:0809" #crazy enough, this PCI ID doesn't existing the PCI DB.
+    "AVAGO MegaRAID 9361-8i":
+      hba_expected_version: "24.21.0-0067"
+      hba_url: "{{ artifact_base_url }}/mr3108fw_4.680.01-8393.rom"
+      hba_md5: "e847752d5dd5f3e8acc68973e92ee576"
+      pci_id: "1000:005d:1000:9361"

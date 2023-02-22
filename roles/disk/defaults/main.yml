@@ -1,0 +1,214 @@
+disk_nvme_block_size: 512
+disk_firmware:
+  MTFDDAK1T9TCB:
+    expected_firmware_version: "D0MU075"
+    firmware_url: "{{ artifact_base_url }}/5100_D0MU075.bin"
+    firmware_md5: "45dffeb61b1c866be4262e980fcdf0fa"
+  Micron_5100_MTFDDAK1T9TCB:
+    expected_firmware_version: "D0MU075"
+    firmware_url: "{{ artifact_base_url }}/5100_D0MU075.bin"
+    firmware_md5: "45dffeb61b1c866be4262e980fcdf0fa"
+  MTFDDAK3T8TCB:
+    expected_firmware_version: "D0MU445"
+    firmware_url: "{{ artifact_base_url }}/5100_D0MU445.bin"
+    firmware_md5: "58574dbcc426af30745e052bb490919e"
+  Micron_5100_MTFDDAK3T8TCB:
+    expected_firmware_version: "D0MU445"
+    firmware_url: "{{ artifact_base_url }}/5100_D0MU445.bin"
+    firmware_md5: "58574dbcc426af30745e052bb490919e"
+  MTFDDAK480TCB:
+    expected_firmware_version: "D0MU075"
+    firmware_url: "{{ artifact_base_url }}/5100_D0MU075.bin"
+    firmware_md5: "45dffeb61b1c866be4262e980fcdf0fa"
+  Micron_5100_MTFDDAK480TCB:
+    expected_firmware_version: "D0MU075"
+    firmware_url: "{{ artifact_base_url }}/5100_D0MU075.bin"
+    firmware_md5: "45dffeb61b1c866be4262e980fcdf0fa"
+  S610DC-3840:
+    expected_firmware_version: "M019"
+    firmware_url: "{{ artifact_base_url }}/S610DC_M019.bin"
+    firmware_md5: "fb2a6faf0a3f011d7b297110d97c7217"
+  MTFDDAK1T9TDD:
+    expected_firmware_version: "D1MU020"
+    firmware_url: "{{ artifact_base_url }}/5200_D1MU020.bin"
+    firmware_md5: "e4a44088e5169f8a3bd75b8a46b73610"
+  Micron_5200_MTFDDAK1T9TDD:
+    expected_firmware_version: "D1MU020"
+    firmware_url: "{{ artifact_base_url }}/5200_D1MU020.bin"
+    firmware_md5: "e4a44088e5169f8a3bd75b8a46b73610"
+  MTFDDAK960TDD:
+    expected_firmware_version: "D1MU020"
+    firmware_url: "{{ artifact_base_url }}/5200_D1MU020.bin"
+    firmware_md5: "e4a44088e5169f8a3bd75b8a46b73610"
+  Micron_5200_MTFDDAK960TDD:
+    expected_firmware_version: "D1MU020"
+    firmware_url: "{{ artifact_base_url }}/5200_D1MU020.bin"
+    firmware_md5: "e4a44088e5169f8a3bd75b8a46b73610"
+  MTFDDAK480TDN:
+    expected_firmware_version: "D1MU020"
+    firmware_url: "{{ artifact_base_url }}/5200_D1MU020.bin"
+    firmware_md5: "e4a44088e5169f8a3bd75b8a46b73610"
+  Micron_5200_MTFDDAK480TDN:
+    expected_firmware_version: "D1MU020"
+    firmware_url: "{{ artifact_base_url }}/5200_D1MU020.bin"
+    firmware_md5: "e4a44088e5169f8a3bd75b8a46b73610"
+  MTFDDAK3T8TDD:
+    expected_firmware_version: "D1MU520"
+    firmware_url: "{{ artifact_base_url }}/5200_D1MU520.bin"
+    firmware_md5: "29dde22beca7c901e8270998f8c37bab"
+  Micron_5200_MTFDDAK3T8TDD:
+    expected_firmware_version: "D1MU520"
+    firmware_url: "{{ artifact_base_url }}/5200_D1MU520.bin"
+    firmware_md5: "29dde22beca7c901e8270998f8c37bab"
+  INTEL SSDPE2KX080T8:
+    expected_firmware_version: "VDV1018D"
+    firmware_url: "{{ artifact_base_url }}/VDV1018D_VB1B0182_WFEM01Q0_signed.bin"
+    firmware_md5: "ae4de26bd76ea5e1bd0dd290b79d321e"
+  INTEL SSDPE2KX080T8O:
+    expected_firmware_version: "VDV1018D"
+    firmware_url: "{{ artifact_base_url }}/VDV1018D_VB1B0182_WFEM01Q0_signed.bin"
+    firmware_md5: "ae4de26bd76ea5e1bd0dd290b79d321e"
+  INTEL SSDPE2KX040T8:
+    expected_firmware_version: "VDV1018D"
+    firmware_url: "{{ artifact_base_url }}/VDV1018D_VB1B0182_WFEM01Q0_signed.bin"
+    firmware_md5: "ae4de26bd76ea5e1bd0dd290b79d321e"
+  INTEL SSDPE2KX020T8:
+    expected_firmware_version: "VDV1018D"
+    firmware_url: "{{ artifact_base_url }}/VDV1018D_VB1B0182_WFEM01Q0_signed.bin"
+    firmware_md5: "ae4de26bd76ea5e1bd0dd290b79d321e"
+  INTEL SSDPE2KX010T8:
+    expected_firmware_version: "VDV1018D"
+    firmware_url: "{{ artifact_base_url }}/VDV1018D_VB1B0182_WFEM01Q0_signed.bin"
+    firmware_md5: "ae4de26bd76ea5e1bd0dd290b79d321e"
+  KCM5XRUG3T84:
+    expected_firmware_version: "0107"
+    firmware_url: "{{ artifact_base_url }}/CM5-SIE-0107.std"
+    firmware_md5: "e5a5b34010e86a72c6c25e4703351fb3"
+  KCM5XRUG1T92:
+    expected_firmware_version: "0107"
+    firmware_url: "{{ artifact_base_url }}/CM5-SIE-0107.std"
+    firmware_md5: "e5a5b34010e86a72c6c25e4703351fb3"
+  KCM5XRUG960G:
+    expected_firmware_version: "0107"
+    firmware_url: "{{ artifact_base_url }}/CM5-SIE-0107.std"
+    firmware_md5: "e5a5b34010e86a72c6c25e4703351fb3"
+  SAMSUNG MZ7LH3T8HMLT-00005:
+    expected_firmware_version: "HXT7904Q"
+    firmware_url: "{{ artifact_base_url }}/PM883_HXT7904Q_NF.BIN"
+    firmware_md5: "731be361d6e266b44021e09d6184050f"
+  SAMSUNG MZ7LH1T9HMLT-00005:
+    expected_firmware_version: "HXT7904Q"
+    firmware_url: "{{ artifact_base_url }}/PM883_HXT7904Q_NF.BIN"
+    firmware_md5: "731be361d6e266b44021e09d6184050f"
+  INTEL SSDSC2KB480G8:
+    expected_firmware_version: "XCV10120"
+    firmware_url: "{{ artifact_base_url }}/S4510_XCV10120_XBUB0010_signed.bin"
+    firmware_md5: "511a44718f576de62f16224d53fcb163"
+  INTEL SSDSC2KB960G8:
+    expected_firmware_version: "XCV10120"
+    firmware_url: "{{ artifact_base_url }}/S4510_XCV10120_XBUB0010_signed.bin"
+    firmware_md5: "511a44718f576de62f16224d53fcb163"
+  INTEL SSDSC2KB038T8:
+    expected_firmware_version: "XCV10120"
+    firmware_url: "{{ artifact_base_url }}/S4510_XCV10120_XBUB0010_signed.bin"
+    firmware_md5: "511a44718f576de62f16224d53fcb163"
+  INTEL SSDSC2KB019T8:
+    expected_firmware_version: "XCV10120"
+    firmware_url: "{{ artifact_base_url }}/S4510_XCV10120_XBUB0010_signed.bin"
+    firmware_md5: "511a44718f576de62f16224d53fcb163"
+  KCM5DRUG7T68:
+    expected_firmware_version: "0107"
+    firmware_url: "{{ artifact_base_url }}/CM5-SED-0107.std"
+    firmware_md5: "97c91046de68c3d804642a7b906479c8"
+  TOSHIBA KHK61RSE480G:
+    expected_firmware_version: "1DET6102"
+    firmware_url: "{{ artifact_base_url }}/HK6R_1DET6102.fuf"
+    firmware_md5: "ccd3f32792c4331e0423031a468ef436"
+  TOSHIBA KHK61RSE1T92:
+    expected_firmware_version: "1DET6102"
+    firmware_url: "{{ artifact_base_url }}/HK6R_1DET6102.fuf"
+    firmware_md5: "ccd3f32792c4331e0423031a468ef436"
+  TOSHIBA KHK61RSE3T84:
+    expected_firmware_version: "1DET6102"
+    firmware_url: "{{ artifact_base_url }}/HK6R_1DET6102.fuf"
+    firmware_md5: "ccd3f32792c4331e0423031a468ef436"
+  INTEL SSDSC2KB019T7:
+    expected_firmware_version: "SCV10150"
+    firmware_url: "{{ artifact_base_url }}/S4500_SCV10150_SBUB0023.bin"
+    firmware_md5: "9ad414dea6294c9aa74da0de3fc594e8"
+  INTEL SSDSC2KB480G7:
+    expected_firmware_version: "SCV10150"
+    firmware_url: "{{ artifact_base_url }}/S4500_SCV10150_SBUB0023.bin"
+    firmware_md5: "9ad414dea6294c9aa74da0de3fc594e8"
+  HFS960GDUFEH-A430A:
+    expected_firmware_version: "90033G00"
+    firmware_url: "{{ artifact_base_url }}/90033G00_main_signed_mp.bin"
+    firmware_md5: "b3297d40e8a91d437aa3147f7c3c0aba"
+  HFS3T8GDUFEH-A430A:
+    expected_firmware_version: "90033G00"
+    firmware_url: "{{ artifact_base_url }}/90033G00_main_signed_mp.bin"
+    firmware_md5: "b3297d40e8a91d437aa3147f7c3c0aba"
+  WUS4BB096D7P3E3:
+    expected_firmware_version: "R1110021"
+    firmware_url: "{{ artifact_base_url }}/aspenplus_GN_R1110021.vpkg"
+    firmware_md5: "1d2e804c57f2ab8e12383a283438faed"
+  WUS4BB038D7P3E3:
+    expected_firmware_version: "R1110021"
+    firmware_url: "{{ artifact_base_url }}/aspenplus_GN_R1110021.vpkg"
+    firmware_md5: "1d2e804c57f2ab8e12383a283438faed"
+  WUS4BB076D7P3E3:
+    expected_firmware_version: "R1410002"
+    firmware_url: "{{ artifact_base_url }}/aspenplus_qs4_GN_R1410002.vpkg"
+    firmware_md5: "49cae704632b923c41d97ec14b67ea84"
+  WUS4BB076D7P3E4:
+    expected_firmware_version: "R1410004"
+    firmware_url: "{{ artifact_base_url }}/aspenplus_qs4_GR_R1410004.vpkg"
+    firmware_md5: "3f9a87829161306d5c7eb68e4dd8db70"
+  KCD6XLUL960G:
+    expected_firmware_version: "0106"
+    firmware_url: "{{ artifact_base_url }}/CD6-ISE-0106.std"
+    firmware_md5: "63513e94c8c0c6a7531dd98eb02ac18c"
+  KCD6XLUL3T84:
+    expected_firmware_version: "0106"
+    firmware_url: "{{ artifact_base_url }}/CD6-ISE-0106.std"
+    firmware_md5: "63513e94c8c0c6a7531dd98eb02ac18c"
+  KCD6DLUL7T68:
+    expected_firmware_version: "0106"
+    firmware_url: "{{ artifact_base_url }}/CD6-ISE-0106.std"
+    firmware_md5: "63513e94c8c0c6a7531dd98eb02ac18c"
+  INTEL SSDPE2NV153T8:
+    expected_firmware_version: "8DV10561"
+    firmware_url: "{{ artifact_base_url }}/P4326_8DV10561_3B1B0020_WFEM01M2_signed.bin"
+    firmware_md5: "d72ac9e11f2efe9097d8cc445a536bab"
+  INTEL SSDPF2KX038TZ:
+    expected_firmware_version: "JCV10200"
+    firmware_url: "{{ artifact_base_url }}/P5510_JCV10200_WFEM01S0_signed.bin"
+    firmware_md5: "25fa82e16715f27ecc0b638be76a0892"
+  INTEL SSDPF2KX076TZ:
+    expected_firmware_version: "JCV10200"
+    firmware_url: "{{ artifact_base_url }}/P5510_JCV10200_WFEM01S0_signed.bin"
+    firmware_md5: "25fa82e16715f27ecc0b638be76a0892"
+  MTFDDAK3T8TDS:
+    expected_firmware_version: "D3MU401"
+    firmware_url: "{{ artifact_base_url }}/5300_D3MU401_Releasefullconcatenatedbinary.bin"
+    firmware_md5: "2d86a2be0c54aad7107c133969bbf096"
+  MTFDDAK1T9TDS:
+    expected_firmware_version: "D3MU001"
+    firmware_url: "{{ artifact_base_url }}/5300_D3MU001_Releasefullconcatenatedbinary.bin"
+    firmware_md5: "a7078b547f3cacd5e1cccb54ef379089"
+  INTEL SSDPF2NV153TZ:
+    expected_firmware_version: "ACV10200"
+    firmware_url: "{{ artifact_base_url }}/P5316_ACV10200_WFEM01S0_signed.bin"
+    firmware_md5: "9df53c80e6f26bd56ddc492724a1dcc4"
+  Micron_7450_MTFDKCC3T8TFR:
+    expected_firmware_version: "E2MU110"
+    firmware_url: "{{ artifact_base_url }}/Micron_7450_E2MU110_release.ubi"
+    firmware_md5: "a2f19a9bb0e578d83eeb13d057f6ff36"
+  Micron_7450_MTFDKCC960TFR:
+    expected_firmware_version: "E2MU110"
+    firmware_url: "{{ artifact_base_url }}/Micron_7450_E2MU110_release.ubi"
+    firmware_md5: "a2f19a9bb0e578d83eeb13d057f6ff36"
+  INTEL SSDPF2KX038T1:
+    expected_firmware_version: "9CV10207"
+    firmware_url: "{{ artifact_base_url }}/P5520_9CV10207_WFEM0242_signed.bin"
+    firmware_md5: "2c74b14f0ff66013b326830ddc1455ba"

@@ -1,0 +1,80 @@
+nic_firmware_data:
+  intel:
+    pci_ids:
+      - 8086:1583:8086:0000
+      - 8086:1583:8086:0001
+      - 8086:1583:8086:0002
+      - 8086:1583:8086:0006
+      - 8086:1572:8086:0000
+      - 8086:1572:8086:0006
+      - 8086:1572:8086:0007
+      - 8086:1572:8086:0008
+    # Fortville NICs (XL710, X710)
+    i40e:
+      expected_firmware_version: "7.00"
+      firmware_url: "{{ artifact_base_url }}/700Series_NVMUpdatePackage_v7_00_Linux.tar.gz"
+      firmware_md5: 1b014f32f4bf610436050e8f49189d0a
+      # downgrade dictionary format is:
+      # nic_firmware_data[$DRIVER]['downgrade_firmware'][$TARGET_FW][$CURRENT_FW]
+      downgrade_firmware:
+        "7.00":
+          "7.10":
+            firmware_url: "{{ artifact_base_url }}/700Series_NVMDowngradePackage_v7_10_to_v7_00_Linux.tar.gz"
+            firmware_md5: d7b6710d0b6aa84b33e319f1cc8e057b
+    # Columbiaville NICs (E810)
+    ice:
+      expected_firmware_version: "2.50"
+      firmware_url: "{{ artifact_base_url }}/E810_NVMUpdatePackage_v2_50_Linux.tar.gz"
+      firmware_md5: "3f0565b26e1ef49d802f6c56aa091d2c"
+      downgrade_firmware:
+  mellanox:
+    pci_ids:
+      # MCX4121A-ACAT
+      - 15b3:1015:15b3:0003
+      # MCX516A-CCAT
+      - 15b3:1017:15b3:0007
+      # MCX623106AN-CDAT
+      - 15b3:101d:15b3:0016
+      # MCX621102AN-ADAT
+      - 15b3:101d:15b3:0012
+    MCX4121A-ACAT:
+      expected_firmware_version: 14.32.1010
+      firmware_url: "{{ artifact_base_url }}/fw-ConnectX4Lx-rel-14_32_1010-MCX4121A-ACA_Ax-UEFI-14.25.17-FlexBoot-3.6.502.bin.zip"
+      firmware_md5: 87ff1a8dfa120862017c44f527814903
+    09J2HH:
+      expected_firmware_version: 14.32.1010
+      firmware_url: "{{ artifact_base_url }}/fw-ConnectX4Lx-rel-14_32_1010-MCX4121A-ACA_Ax-UEFI-14.25.17-FlexBoot-3.6.502.bin.zip"
+      firmware_md5: 87ff1a8dfa120862017c44f527814903
+    MCX516A-CCAT:
+      expected_firmware_version: 16.31.1014
+      firmware_url: "{{ artifact_base_url }}/fw-ConnectX5-rel-16_31_1014-MCX516A-CCA_Ax-UEFI-14.24.13-FlexBoot-3.6.403.bin.zip"
+      firmware_md5: eac241767e98883a3432b9c6e91ef3b5
+    MCX623106AN-CDAT:
+      expected_firmware_version: 22.34.4000
+      firmware_url: "{{ artifact_base_url }}/fw-ConnectX6Dx-rel-22_34_4000-MCX623106AN-CDA_Ax-UEFI-14.27.15-FlexBoot-3.6.700.bin.zip"
+      firmware_md5: 4286e9e705af4297462f97a056e7b28b
+    MCX621102AN-ADAT:
+      expected_firmware_version: 22.34.4000
+      firmware_url: "{{ artifact_base_url }}/fw-ConnectX6Dx-rel-22_34_4000-MCX621102AN-ADA_Ax-UEFI-14.27.15-FlexBoot-3.6.700.bin.zip"
+      firmware_md5: da928534255cabc8d87f2a182a39b653
+  solarflare:
+    pci_ids:
+      - 1924:0903:1924:800a
+      - 1924:0903:1924:800c
+      - 1924:0903:1924:800d
+      - 1924:0923:1924:800b
+      - 1924:0923:1924:800e
+    expected_firmware_version: "6.2.7.1000"
+    firmware_url: "{{ artifact_base_url }}/SF-107601-LS-56_Solarflare_Linux_Utilities_RPM_64bit.zip"
+    firmware_md5: "bd8f5ad0bdd0ccfbb9a261affb467af5"
+  broadcom:
+    pci_ids:
+      # BCM957508-P2100G
+      - 14e4:1750:14e4:2100
+    BCM957508-P2100G:
+      #219.0.112.0/pkg = FW 219.0.144.0
+      expected_firmware_version: 219.0.112.0/pkg
+      bnxtnvm_url: "{{ artifact_base_url }}/bnxtnvm_219.0.36.0"
+      bnxtnvm_md5: dac29c7a6cab9be51bf8e064e10984ad
+      firmware_url: "{{ artifact_base_url }}/BCM957508-P2100G_219.0.144.0.pkg"
+      firmware_md5: da7e6513c38fb4eebb21f666ede1f6bb

@@ -1,0 +1,29 @@
+---
+# Unfortunately Dell's redfish implementation is garbage and requires
+# an additional API call to create a BIOS config job to make any changes
+# 'stick'.
+# Ansible 2.8 also introduced "OEM" redfish modules. We'll need to use the
+# idrac_redfish_command module (instead of the vanilla redfish_command) in
+# order to create a Dell BIOS Config Job (because this operation uses OEM
+# extensions / isn't really redfish compliant.)
+- name: Create Dell BIOS Config Job
+  community.general.idrac_redfish_command:
+    category: Systems
+    command: CreateBiosConfigJob
+    baseuri: "{{ bmc_address }}"
+    username: "{{ bmc_username }}"
+    password: "{{ bmc_password }}"
+    timeout: "{{ default_uri_timeout }}"
+  listen: "update bios config on reboot"
+  delegate_to: 127.0.0.1
+  when: ansible_system_vendor == "Dell Inc."
+
+- name: Reboot the server
+  reboot:
+    reboot_timeout: "{{ reboot_timeout }}"
+  become: yes
+  listen: "reboot server"
+  when: not skip_reboot | default(False) | bool
+
+- name: Regather facts after reboot
+  setup:

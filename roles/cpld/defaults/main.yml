@@ -1,0 +1,19 @@
+cpld_firmware:
+  Dell Inc.:
+    cpld_update_task: "dell.yml"
+    PowerEdge R640:
+      cpld_expected_version: "1.0.6"
+      cpld_url: "{{ artifact_base_url }}/CPLD_Firmware_9N4DH_LN_1.0.6_A00.BIN"
+      cpld_md5: "8cff825e1feb481c3efbc37388c1ce17"
+    PowerEdge R7415:
+      cpld_expected_version: "1.0.14"
+      cpld_url: "{{ artifact_base_url }}/CPLD_Firmware_WNF6R_LN_1.0.14_A00.BIN"
+      cpld_md5: "0e6a30ec69a288217490ea1ca8c238e0"
+    PowerEdge R6515:
+      cpld_expected_version: "1.0.3"
+      cpld_url: "{{ artifact_base_url }}/CPLD_Firmware_YR1G7_LN_1.0.3_A00.BIN"
+      cpld_md5: "142e85182a06298fc6163d2ecd69729b"
+    PowerEdge R650xs:
+      cpld_expected_version: "1.0.5"
+      cpld_url: "{{ artifact_base_url }}/CPLD_Firmware_2RD2C_LN_1.0.5_A00.BIN"
+      cpld_md5: "28cdd9d8faa6e5b02afb6e003e00b52d"

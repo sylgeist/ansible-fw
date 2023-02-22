@@ -1,0 +1,55 @@
+---
+- name: Set Installed CPLD version
+  set_fact:
+    cpld_version: "{{ (redfish_fw_inventory['redfish_facts']['firmware']['entries'] | selectattr('Name', '==', 'System CPLD')
+                                                                                    | selectattr('Id', 'search', 'Current|Installed')
+                                                                                    | list
+                                                                                    | first)['Version'] }}"
+
+- block:
+  - name: Create Dell CPLD update directory
+    tempfile:
+      state: directory
+      suffix: cpld
+    register: cpld_update_temp
+
+  - name: Set Dell CPLD update directory fact
+    set_fact:
+      cpld_update_dir: "{{ cpld_update_temp.path }}"
+
+  - name: Grab the Dell CPLD bin
+    get_url:
+      url: "{{ cpld_url }}"
+      dest: "{{ cpld_update_dir }}/cpld.bin"
+      mode: "0755"
+      timeout: "240"
+      checksum: "md5:{{ cpld_md5 }}"
+    register: get_url_status
+    until: get_url_status is succeeded
+    retries: "{{ artifact_retries }}"
+    delay: "{{ artifact_delay }}"
+    vars:
+      cpld_url: "{{ cpld_firmware[ansible_system_vendor][ansible_product_name]['cpld_url'] }}"
+      cpld_md5: "{{ cpld_firmware[ansible_system_vendor][ansible_product_name]['cpld_md5'] }}"
+
+  - name: Upgrade/downgrade Dell CPLD
+    command: "{{ cpld_update_dir }}/cpld.bin -q -f"
+    register: cpld_upg
+    failed_when: cpld_upg.rc != 2 # 2 == REBOOT_REQUIRED
+    notify: "reboot server"
+
+  - name: Clean up Dell CPLD bin
+    file:
+      path: "{{ cpld_update_dir }}"
+      state: absent
+
+  # We need to flush our handlers and reboot immediately.
+  # The CPLD firmware cannot be staged with any other updates.
+  - name: Flush Reboot Handlers
+    meta: flush_handlers
+
+  become: yes
+  when:
+    - cpld_version is defined
+    - cpld_version is version(cpld_firmware[ansible_system_vendor][ansible_product_name]['cpld_expected_version'], '!=')
+    - not ansible_check_mode

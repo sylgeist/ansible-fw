@@ -1,0 +1,140 @@
+---
+- block:
+    - name: Capture PCI information
+      command: lspci -Dmmn
+      register: lspci_output
+      changed_when: false
+      check_mode: False
+
+    # Yes this regex is gnarly, breakdown for Future Sharks
+    #
+    # The PCI address of the card (including domain)
+    # [0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}.[0-9]
+    # Example:
+    # - 0000:81:00.0
+    # - 0000:03:00.0
+    #
+    # Ethernet PCIe devices
+    # "0200"
+    #
+    # PCI Vendor
+    # "(.{4})"
+    # Example:
+    # - 15b3 (Mellanox Technologies)
+    # - 8086 (Intel Corporation)
+    #
+    # PCI Model
+    # "(.{4})"
+    # Example:
+    # - 1015 (MT27710 Family [ConnectX-4 Lx])
+    # - 1583 (Ethernet Controller XL710 for 40GbE QSFP+)
+    #
+    # Optional PCI revision
+    # (?:\s*-r[0-9]{2})?
+    # Example:
+    # - (Blank, for MT27710 Family)
+    # - -r02 (XL710)
+    # NB: This is an optional capture group that is discarded. Rev isn't needed.
+    #
+    # PCI Sub-vendor
+    # "(.{4})"
+    # Example:
+    # - 15b3 (Mellanox Technologies)
+    # - 8086 (Intel Corporation)
+    #
+    # PCI Sub-model
+    # "(.{4})"
+    # Example:
+    # - 0003 (Stand-up ConnectX-4 Lx EN, 25GbE dual-port SFP28, PCIe3.0 x8, MCX4121A-ACAT)
+    # - 0000 (Ethernet Converged Network Adapter XL710-Q2)
+    #
+    # A complete string from lspci looks like:
+    # - 0000:81:00.0 "0200" "15b3" "1015" "15b3" "0003"
+    # - 0000:03:00.0 "0200" "8086" "1583" -r02 "8086" "0002"
+
+    # Loop added in JIRA-1234 to filter Ethernet devices only based on
+    # known PCI IDs defined in nic_firmware_data. This prevents capturing
+    # ethernet devices that may be physicall present, but do not have a Linux
+    # interface (e.g. blacklisted 1G NICs that are not disabled in BIOS).
+    - name: Build lists for PCIe slot and ID information
+      set_fact:
+        pci_slots: "{{ pci_slots | default([]) + [pci_slot] }}"
+        pci_ids: "{{ pci_ids | default([]) + [pci_id] }}"
+      with_items: "{{ ethernet_devices }}"
+      vars:
+        ethernet_device_query: '(?:[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}.[0-9]) "0200".+'
+        slot_regex_query: '([0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}.[0-9]) "0200"'
+        id_regex_query: '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}.[0-9] "0200" "(.{4})" "(.{4})"(?:\s*-r[0-9]{2})? "(.{4})" "(.{4})"'
+        ethernet_devices: "{{ lspci_output.stdout | regex_findall(ethernet_device_query) }}"
+        known_pci_ids: "{{ nic_firmware_data | dict2items
+          | map(attribute='value')
+          | map(attribute='pci_ids')
+          | flatten }}"
+        pci_slot: "{{ item | regex_findall(slot_regex_query)
+          | first }}"
+        pci_id: "{{ item | regex_findall(id_regex_query)
+          | map('join', ':')
+          | list
+          | first }}"
+      when:
+        - pci_id in known_pci_ids
+
+    # Only execute tasks if we have PCI IDs known to firmware_updater
+    - block:
+        # Parse sysfs to identify Linux interface names (eth0, enp0s31f6, etc)
+        - name: Capture interface names
+          find:
+            paths: "/sys/bus/pci/devices/{{ item }}/net"
+            recurse: no
+            file_type: directory
+          register: nic_output
+          with_items: "{{ pci_slots }}"
+
+        - name: Build nic list
+          set_fact:
+            nics: "{{ nic_output.results | map(attribute='files')
+              | flatten
+              | map(attribute='path')
+              | map('basename') }}"
+
+        - name: Capture firmware versions
+          command: "ethtool -i {{ item }}"
+          register: ethtool_output
+          with_items: "{{ nics }}"
+          check_mode: False
+          changed_when: false
+
+        - name: Build firmware list
+          set_fact:
+            firmware_versions:
+              "{{ ethtool_output.results | map(attribute='stdout')
+              | map('regex_search', 'firmware-version: (\\S+)', '\\1')
+              | flatten }}"
+            drivers: "{{ ethtool_output.results | map(attribute='stdout')
+              | map('regex_search', 'driver: (\\S+)', '\\1')
+              | flatten }}"
+
+        - name: Assemble our fancy new data structure
+          set_fact:
+            interfaces: "{{ interfaces | default([]) + [{'nic': item.0,
+              'firmware_version': item.1,
+              'pci_slot': item.2,
+              'pci_id': item.3,
+              'driver': item.4}] }}"
+          with_together:
+            - "{{ nics }}"
+            - "{{ firmware_versions }}"
+            - "{{ pci_slots }}"
+            - "{{ pci_ids }}"
+            - "{{ drivers }}"
+
+        # include vendor specific tasks for NIC FW version detection and updating.
+        - include_tasks: "{{ nic_item.key }}.yml"
+          when: interfaces | selectattr('pci_id', 'in', nic_item.value.pci_ids)
+          with_dict: "{{ nic_firmware_data }}"
+          loop_control:
+            loop_var: nic_item
+      when:
+        - pci_ids is defined
+  tags:
+    - nic

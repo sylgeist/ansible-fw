@@ -1,0 +1,138 @@
+---
+- block:
+  # Generate list of MLNX NICs based on first port only (for multi port NICs)
+  - name: Generate list of Mellanox NICs
+    set_fact:
+      mellanox_nics: "{{ interfaces | selectattr('pci_id', 'in', nic_firmware_data.mellanox.pci_ids)
+                                    | selectattr('pci_slot', 'search', '0$') }}"
+
+  # Mellanox NIC part numbers are stored in PCI VPD
+  - name: Capture Mellanox PNs
+    command: "lspci -s {{ item.pci_slot }} -vv"
+    with_items: "{{ mellanox_nics }}"
+    register: lspci_output
+    check_mode: False
+    changed_when: false
+
+  - name: Build Mellanox PN list
+    set_fact:
+      mellanox_pns: "{{ lspci_output.results | map(attribute='stdout')
+                                             | map('regex_search', 'Part number: (\\S+)', '\\1')
+                                             | flatten }}"
+
+  # Create a new datastructure that:
+  # - has MLNX PNs
+  # - is filtered on valid MLNX NICs (port 0 only)
+  # - requires a FW upgrade/downgrade
+  - name: Assemble MLNX specific datastructure for NICs that require FW changes
+    set_fact:
+      mellanox_nics_to_update: "{{ mellanox_nics_to_update | default([]) + [{'nic': item.0.nic,
+                                                                             'firmware_version': item.0.firmware_version,
+                                                                             'pci_slot': item.0.pci_slot,
+                                                                             'pci_id': item.0.pci_id,
+                                                                             'pn': item.1}] }}"
+    with_together:
+      - "{{ mellanox_nics }}"
+      - "{{ mellanox_pns }}"
+    when:
+      - item.0.firmware_version is version(nic_firmware_data['mellanox'][item.1]['expected_firmware_version'], 'ne')
+
+  # Download and apply firmware updates
+  - block:
+    - name: Create temp directory for Mellanox FW downloads
+      tempfile:
+        state: directory
+        suffix: -mlnx
+      register: mellanox_fw_dir
+
+    - name: Download Mellanox FW
+      get_url:
+        url: "{{ mellanox_fw_url }}"
+        dest: "{{ mellanox_fw_dir.path }}/{{ mellanox_fw_filename }}"
+        mode: "0644"
+        checksum: "md5:{{ mellanox_fw_md5 }}"
+      register: get_url_status
+      until: get_url_status is succeeded
+      retries: "{{ artifact_retries }}"
+      delay: "{{ artifact_delay }}"
+      with_items: "{{ mellanox_nics_to_update }}"
+      vars:
+        mellanox_fw_md5: "{{ nic_firmware_data['mellanox'][item.pn]['firmware_md5'] }}"
+        mellanox_fw_url: "{{ nic_firmware_data['mellanox'][item.pn]['firmware_url'] }}"
+        mellanox_fw_filename: "{{ nic_firmware_data['mellanox'][item.pn]['firmware_url'] | basename }}"
+
+    - name: Extract Mellanox FW
+      unarchive:
+        src: "{{ mellanox_fw_dir.path }}/{{ mellanox_fw_filename }}"
+        dest: "{{ mellanox_fw_dir.path }}"
+        remote_src: True
+      with_items: "{{ mellanox_nics_to_update }}"
+      vars:
+        mellanox_fw_filename: "{{ nic_firmware_data['mellanox'][item.pn]['firmware_url'] | basename }}"
+
+    # Requires the mstflint deb; added to all live images and installed via
+    # chef for installed OS images.
+    - name: Upgrade/downgrade Mellanox firmware
+      command: "mstflint -y -d {{ item.pci_slot }} -i {{ mellanox_fw_dir.path }}/{{ mellanox_fw_bin }} b"
+      with_items: "{{ mellanox_nics_to_update }}"
+      vars:
+        mellanox_fw_bin: "{{ nic_firmware_data['mellanox'][item.pn]['firmware_url'] | basename | regex_replace('.zip') }}"
+
+    - name: Reset NIC to apply FW update
+      command: "mstfwreset -y -d {{ item.pci_slot }} r"
+      with_items: "{{ mellanox_nics_to_update }}"
+
+    - name: Delete temp fw files
+      file:
+        path: "{{ mellanox_fw_dir.path }}"
+        state: absent
+    when:
+      - mellanox_nics_to_update | default([]) | length > 0
+      - not ansible_check_mode
+
+  - block:
+    # Iterate over all MLNX NICs, regardless of FW levels
+    - name: Identify current Mellanox UEFI settings
+      command: "mstconfig -d {{ item.pci_slot }} q"
+      with_items: "{{ mellanox_nics }}"
+      register: mstconfig_get_output
+      changed_when: false
+
+    - name: Enable Mellanox UEFI expansion ROM
+      command: "mstconfig -y -d {{ item.item.pci_slot }} set UEFI_HII_EN=1 EXP_ROM_UEFI_x86_ENABLE=1"
+      with_items: "{{ mstconfig_get_output.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      vars:
+        pci_slot: "{{ item.item.pci_slot }}"
+        hii_status: "{{ item.stdout | regex_findall('UEFI_HII_EN\\s+(\\S+)', '\\1')
+                                    | list
+                                    | first }}"
+        exp_rom_status: "{{ item.stdout | regex_findall('EXP_ROM_UEFI_x86_ENABLE\\s+(\\S+)', '\\1')
+                                        | list
+                                        | first }}"
+      when:
+        - (hii_status | regex_search('False')) or (exp_rom_status | regex_search('False'))
+      register: mstconfig_set_output
+
+    - name: Reset Mellanox NIC to apply UEFI expansion ROM settings
+      command: "mstfwreset -y -d {{ item.item.item.pci_slot }} r"
+      with_items: "{{ mstconfig_set_output.results }}"
+      loop_control:
+        label: "{{ item.item.item }}"
+      when:
+        - item.changed
+    when: not ansible_check_mode
+
+  become: yes
+
+- name: Mellanox NIC Firmware Check
+  set_fact:
+    fw_check: "{{ fw_check | default([]) }} + ['Mellanox NIC (Actual/Expected): {{ item.0.firmware_version }}/{{ nic_firmware_data['mellanox'][item.1]['expected_firmware_version'] }}']"
+  with_together:
+      - "{{ mellanox_nics }}"
+      - "{{ mellanox_pns }}"
+  when:
+    - mellanox_nics is defined
+    - mellanox_pns is defined
+    - ansible_check_mode

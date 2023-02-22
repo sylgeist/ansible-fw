@@ -1,0 +1,20 @@
+backplane_firmware:
+  Dell Inc.:
+    backplane_update_task: "dell.yml"
+    PowerEdge R640:
+      "BP14G+ 0:1":
+        backplane_expected_version: "4.35"
+        backplane_url: "{{ artifact_base_url }}/Firmware_VV85D_LN_4.35_A00_06.BIN"
+        backplane_md5: "b3077bf6b652aa04769098c06386378f"
+    PowerEdge R650xs:
+      "Backplane 1":
+        backplane_expected_version: "3.56"
+        backplane_url: "{{ artifact_base_url }}/Firmware_GWM34_LN64_3.56_A00.BIN"
+        backplane_md5: "836dc32fa2346cc70cca3e8da29b461c"
+  HPE:
+    backplane_update_task: "hpe.yml"
+    ProLiant XL420 Gen10:
+      "Drive Enclosure":
+        backplane_expected_version: "1.79"
+        backplane_url: "{{ artifact_base_url }}/firmware-smartarray-f18fdefd0b-1.79-2.1.x86_64.rpm"
+        backplane_md5: "3776036da6fe44250cb1a1d9b48f1fa6"
